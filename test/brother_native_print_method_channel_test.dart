@@ -16,7 +16,7 @@ void main() {
             case 'discoverPrinters':
               return [
                 {
-                  'model': 'rj2050',
+                  'model': 'RJ-2050',
                   'connectionType': 'wifi',
                   'ipAddress': '192.168.1.10',
                   'macAddress': 'AA:BB:CC:DD:EE:FF',
@@ -42,7 +42,7 @@ void main() {
       connectionTypes: {BrotherConnectionType.wifi},
     );
     expect(printers, hasLength(1));
-    expect(printers.first.model, BrotherModel.rj2050);
+    expect(printers.first.model, 'RJ-2050');
     expect(printers.first.connectionType, BrotherConnectionType.wifi);
     expect(printers.first.serialNumber, 'SN123');
   });

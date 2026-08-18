@@ -94,26 +94,37 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         // I canali vengono raccolti dal risultato sincrono.
       }
       if result.error.code != .noError {
-        // La ricerca Wi-Fi fallita non deve bloccare gli altri canali.
+        print("[BrotherNativePrint] Ricerca Wi-Fi fallita: \(result.error.code.rawValue)")
       } else {
         result.channels.forEach { channels[Self.channelKey($0)] = $0 }
       }
     }
 
     if connectionTypes.contains("bluetooth") {
+      #if targetEnvironment(simulator)
+      print("[BrotherNativePrint] ATTENZIONE: il simulatore iOS non supporta il Bluetooth")
+      #endif
       try ensureBluetoothAccess()
       let option = BRLMBLESearchOption()
       option.searchDuration = duration
       let bleResult = BRLMPrinterSearcher.startBLESearch(option) { _ in }
       if bleResult.error.code == .noError {
         bleResult.channels.forEach { channels[Self.channelKey($0)] = $0 }
+      } else {
+        print("[BrotherNativePrint] Ricerca BLE fallita: \(bleResult.error.code.rawValue)")
       }
-      // Bluetooth classico (MFi): tentativo aggiuntivo.
+      // Bluetooth classico (MFi/SPP): trova solo stampanti GIÀ ACCOPPIATE
+      // in Impostazioni > Bluetooth (i modelli RJ-2050/QL-820NWB usano SPP,
+      // non BLE).
       let btResult = BRLMPrinterSearcher.startBluetoothSearch()
       if btResult.error.code == .noError {
         btResult.channels.forEach { channels[Self.channelKey($0)] = $0 }
+      } else {
+        print("[BrotherNativePrint] Ricerca Bluetooth classico fallita: \(btResult.error.code.rawValue)")
       }
     }
+
+    print("[BrotherNativePrint] Discovery: trovati \(channels.count) canali")
 
     // USB non è supportato dal kit iOS: restituisce sempre lista vuota.
 
@@ -121,8 +132,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       discoveredChannels = channels
     }
 
-    return channels.values
-      .compactMap { channelToMap($0) }
+    return channels.values.map { channelToMap($0) }
   }
 
   private func ensureBluetoothAccess() throws {
@@ -150,10 +160,11 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       throw PluginFailure(code: "invalidArgument", message: "Campo 'model' mancante")
     }
     let model: BRLMPrinterModel
-    switch modelName {
-    case "rj2050": model = .RJ_2050
-    case "ql820nwb": model = .QL_820NWB
-    default:
+    if modelName.caseInsensitiveCompare("RJ-2050") == .orderedSame {
+      model = .RJ_2050
+    } else if modelName.caseInsensitiveCompare("QL-820NWB") == .orderedSame {
+      model = .QL_820NWB
+    } else {
       throw PluginFailure(code: "invalidArgument", message: "Modello non supportato: \(modelName)")
     }
     guard let connectionType = args["connectionType"] as? String else {
@@ -360,16 +371,15 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
   }
 
-  private func channelToMap(_ channel: BRLMChannel) -> [String: Any?]? {
+  private func channelToMap(_ channel: BRLMChannel) -> [String: Any?] {
     let info = channel.extraInfo
-    let modelName = (info?[BRLMChannelExtraInfoKeyModelName] as? String) ?? ""
-    let model: BRLMPrinterModel
-    if modelName.localizedCaseInsensitiveContains("RJ-2050") {
-      model = .RJ_2050
-    } else if modelName.localizedCaseInsensitiveContains("QL-820NWB") {
-      model = .QL_820NWB
+    let rawModelName = (info?[BRLMChannelExtraInfoKeyModelName] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let modelName: String
+    if let raw = rawModelName, !raw.isEmpty {
+      modelName = raw
     } else {
-      return nil
+      modelName = "Unknown"
     }
     let connectionType: String
     switch channel.channelType {
@@ -381,7 +391,8 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       connectionType = "usb"
     }
     return [
-      "model": model == .RJ_2050 ? "rj2050" : "ql820nwb",
+      // Nome del modello riportato dall'SDK (es. "RJ-2050", "QL-820NWB").
+      "model": modelName,
       "connectionType": connectionType,
       "ipAddress": (info?[BRLMChannelExtraInfoKeyIpAddress] as? String)
         ?? (channel.channelType == .wiFi ? channel.channelInfo : nil),

@@ -6,8 +6,9 @@ export 'src/models.dart';
 
 /// API pubblica del plugin Brother Native Print.
 ///
-/// Supporta le stampanti Brother RJ-2050 e QL-820NWB via WiFi, Bluetooth (BLE)
-/// e USB, con stampa di immagini e PDF.
+/// La discovery restituisce tutte le stampanti Brother compatibili trovate
+/// (WiFi, Bluetooth/BLE e USB su Android), senza filtri sul modello. La stampa
+/// di immagini e PDF è supportata e testata sui modelli RJ-2050 e QL-820NWB.
 class BrotherNativePrint {
   Future<List<BrotherPrinter>> discoverPrinters({
     Set<BrotherConnectionType> connectionTypes = const {

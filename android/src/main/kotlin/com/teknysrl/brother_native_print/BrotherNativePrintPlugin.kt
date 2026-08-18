@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.os.Build
+import android.util.Log
 import com.brother.sdk.lmprinter.BLESearchOption
 import com.brother.sdk.lmprinter.Channel
 import com.brother.sdk.lmprinter.NetworkSearchOption
@@ -45,6 +46,10 @@ class BrotherNativePrintPlugin :
     private var context: Context? = null
     private var eventSink: EventChannel.EventSink? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    companion object {
+        private const val TAG = "BrotherNativePrint"
+    }
 
     /** Canali trovati nell'ultima discovery, indicizzati per riaprire la connessione. */
     private val discoveredChannels = HashMap<String, Channel>()
@@ -120,25 +125,32 @@ class BrotherNativePrintPlugin :
         val channels = LinkedHashMap<String, Channel>()
         if ("wifi" in connectionTypes) {
             runCatching { searchNetwork(ctx, durationSec) }
-                .onFailure { /* la discovery Wi-Fi non deve bloccare gli altri canali */ }
+                .onFailure { Log.w(TAG, "Ricerca Wi-Fi fallita: ${it.message}") }
                 .getOrDefault(emptyList())
                 .forEach { channels[channelKey(it)] = it }
         }
         if ("bluetooth" in connectionTypes) {
-            ensureBluetoothPermissions()?.let { problem ->
-                throw FlutterFailure(problem, describeBluetoothProblem(problem))
+            val problem = ensureBluetoothPermissions()
+            if (problem != null) {
+                // Non blocca la discovery: registra il problema e continua con
+                // gli altri canali richiesti (es. Wi-Fi).
+                Log.w(TAG, "Discovery Bluetooth saltata: ${describeBluetoothProblem(problem)}")
+            } else {
+                runCatching { searchBle(ctx, durationSec) }
+                    .onFailure { Log.w(TAG, "Ricerca BLE fallita: ${it.message}") }
+                    .getOrDefault(emptyList())
+                    .forEach { channels[channelKey(it)] = it }
+                // Bluetooth classico (SPP): tentativo aggiuntivo per i modelli
+                // che lo supportano (RJ-2050, QL-820NWB usano SPP classico).
+                runCatching { PrinterSearcher.startBluetoothSearch(ctx).channels.toList() }
+                    .onFailure { Log.w(TAG, "Ricerca Bluetooth classico fallita: ${it.message}") }
+                    .getOrDefault(emptyList())
+                    .forEach { channels[channelKey(it)] = it }
             }
-            runCatching { searchBle(ctx, durationSec) }
-                .onFailure { }
-                .getOrDefault(emptyList())
-                .forEach { channels[channelKey(it)] = it }
-            // Bluetooth classico (SPP): tentativo aggiuntivo per i modelli che lo supportano.
-            runCatching { PrinterSearcher.startBluetoothSearch(ctx).channels.toList() }
-                .getOrDefault(emptyList())
-                .forEach { channels[channelKey(it)] = it }
         }
         if ("usb" in connectionTypes) {
             runCatching { PrinterSearcher.startUSBSearch(ctx).channels.toList() }
+                .onFailure { Log.w(TAG, "Ricerca USB fallita: ${it.message}") }
                 .getOrDefault(emptyList())
                 .forEach { channels[channelKey(it)] = it }
         }
@@ -148,10 +160,9 @@ class BrotherNativePrintPlugin :
             channels.forEach { (key, channel) -> discoveredChannels[key] = channel }
         }
 
-        // Filtra i soli modelli supportati: RJ-2050 e QL-820NWB.
-        return channels.values
-            .mapNotNull { channelToMap(it) }
-            .filter { it["model"] != null }
+        // Nessun filtro sul modello: vengono restituite tutte le stampanti
+        // Brother compatibili trovate dall'SDK.
+        return channels.values.map { channelToMap(it) }
     }
 
     private fun searchNetwork(ctx: Context, durationSec: Double): List<Channel> {
@@ -212,9 +223,9 @@ class BrotherNativePrintPlugin :
             ?: throw FlutterFailure("invalidArgument", "Argomenti connessione mancanti")
         val modelName = args["model"] as? String
             ?: throw FlutterFailure("invalidArgument", "Campo 'model' mancante")
-        val model = when (modelName) {
-            "rj2050" -> PrinterModel.RJ_2050
-            "ql820nwb" -> PrinterModel.QL_820NWB
+        val model = when {
+            modelName.equals("RJ-2050", ignoreCase = true) -> PrinterModel.RJ_2050
+            modelName.equals("QL-820NWB", ignoreCase = true) -> PrinterModel.QL_820NWB
             else -> throw FlutterFailure("invalidArgument", "Modello non supportato: $modelName")
         }
         val connectionType = args["connectionType"] as? String
@@ -396,14 +407,10 @@ class BrotherNativePrintPlugin :
         }
     }
 
-    private fun channelToMap(channel: Channel): Map<String, Any?>? {
+    private fun channelToMap(channel: Channel): Map<String, Any?> {
         val info = channel.extraInfo
-        val modelName = info?.get(Channel.ExtraInfoKey.ModelName) ?: ""
-        val model = when {
-            modelName.contains("RJ-2050", ignoreCase = true) -> PrinterModel.RJ_2050
-            modelName.contains("QL-820NWB", ignoreCase = true) -> PrinterModel.QL_820NWB
-            else -> return null
-        }
+        val modelName = (info?.get(Channel.ExtraInfoKey.ModelName) as? String)
+            ?.takeIf { it.isNotBlank() } ?: "Unknown"
         val connectionType = when (channel.channelType) {
             Channel.ChannelType.Wifi -> "wifi"
             Channel.ChannelType.Bluetooth,
@@ -411,7 +418,8 @@ class BrotherNativePrintPlugin :
             else -> "usb"
         }
         return mapOf(
-            "model" to if (model == PrinterModel.RJ_2050) "rj2050" else "ql820nwb",
+            // Nome del modello riportato dall'SDK (es. "RJ-2050", "QL-820NWB").
+            "model" to modelName,
             "connectionType" to connectionType,
             "ipAddress" to (info?.get(Channel.ExtraInfoKey.IpAddress)
                 ?: if (channel.channelType == Channel.ChannelType.Wifi) channel.channelInfo else null),

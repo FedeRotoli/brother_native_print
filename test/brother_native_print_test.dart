@@ -15,7 +15,7 @@ class MockBrotherNativePrintPlatform
     Duration timeout = const Duration(seconds: 10),
   }) => Future.value([
     const BrotherPrinter(
-      model: BrotherModel.rj2050,
+      model: 'RJ-2050',
       connectionType: BrotherConnectionType.wifi,
       ipAddress: '192.168.1.10',
       serialNumber: 'SN123',
@@ -56,7 +56,7 @@ void main() {
 
     final printers = await brotherNativePrintPlugin.discoverPrinters();
     expect(printers, hasLength(1));
-    expect(printers.first.model, BrotherModel.rj2050);
+    expect(printers.first.model, 'RJ-2050');
     expect(printers.first.ipAddress, '192.168.1.10');
   });
 }

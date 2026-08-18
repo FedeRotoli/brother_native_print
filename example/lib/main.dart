@@ -245,7 +245,7 @@ class _MyAppState extends State<MyApp> {
                                     : Icons.usb,
                               ),
                               title: Text(
-                                '${printer.model.name.toUpperCase()} '
+                                '${printer.model.toUpperCase()} '
                                 '(${printer.connectionType.name})',
                               ),
                               subtitle: Text(

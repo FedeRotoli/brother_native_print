@@ -1,7 +1,9 @@
 # brother_native_print
 
-Plugin Flutter per la stampa con stampanti Brother **RJ-2050** e **QL-820NWB** via
-WiFi, Bluetooth (BLE) e USB (solo Android).
+Plugin Flutter per la stampa con stampanti Brother via WiFi, Bluetooth (BLE) e
+USB (solo Android). La discovery mostra **tutte le stampanti Brother
+compatibili** trovate, senza filtri sul modello; la stampa di immagini e PDF è
+supportata e testata su **RJ-2050** e **QL-820NWB**.
 
 Basato su:
 - **Android**: Brother Print SDK for Android (`com.brother.sdk.lmprinter`),
@@ -98,6 +100,9 @@ await plugin.disconnect();
 - Su iOS il canale Bluetooth si ottiene dalla discovery: chiamare
   `discoverPrinters` e passare a `connect` una stampante trovata.
 - USB supportato solo su Android.
-- Il filtraggio della discovery include solo i modelli RJ-2050 e QL-820NWB.
+- La discovery non applica filtri: mostra tutte le stampanti Brother
+  compatibili trovate. La connessione/stampa è supportata e testata solo sui
+  modelli RJ-2050 e QL-820NWB (per gli altri modelli `connect` restituisce
+  `invalidArgument`).
 
 

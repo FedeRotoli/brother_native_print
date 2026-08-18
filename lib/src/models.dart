@@ -1,15 +1,12 @@
-/// Modelli supportati dal plugin.
-///
-/// Solo i modelli per cui il plugin è stato sviluppato e testato:
-/// RJ-2050 e QL-820NWB.
-enum BrotherModel { rj2050, ql820nwb }
-
 /// Tipo di connessione usata per raggiungere la stampante.
 enum BrotherConnectionType { wifi, bluetooth, usb }
 
 /// Descrizione di una stampante Brother trovata durante la discovery.
 class BrotherPrinter {
-  final BrotherModel model;
+  /// Nome del modello come riportato dall'SDK (es. "RJ-2050", "QL-820NWB",
+  /// "TD-4550DNWB", "PT-P900W"...). La discovery non filtra per modello:
+  /// vengono restituite tutte le stampanti Brother compatibili trovate.
+  final String model;
   final BrotherConnectionType connectionType;
   final String? ipAddress;
   final String? macAddress;
@@ -24,7 +21,7 @@ class BrotherPrinter {
   });
 
   factory BrotherPrinter.fromMap(Map<dynamic, dynamic> map) => BrotherPrinter(
-    model: BrotherModel.values.firstWhere((m) => m.name == map['model']),
+    model: map['model'] as String? ?? 'Unknown',
     connectionType: BrotherConnectionType.values.firstWhere(
       (c) => c.name == map['connectionType'],
     ),
@@ -34,7 +31,7 @@ class BrotherPrinter {
   );
 
   Map<String, dynamic> toMap() => {
-    'model': model.name,
+    'model': model,
     'connectionType': connectionType.name,
     'ipAddress': ipAddress,
     'macAddress': macAddress,
