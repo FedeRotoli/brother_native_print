@@ -16,6 +16,8 @@ import com.brother.sdk.lmprinter.PrinterDriver
 import com.brother.sdk.lmprinter.PrinterDriverGenerator
 import com.brother.sdk.lmprinter.PrinterModel
 import com.brother.sdk.lmprinter.PrinterSearcher
+import com.brother.sdk.lmprinter.setting.CustomPaperSize
+import com.brother.sdk.lmprinter.setting.PrintImageSettings
 import com.brother.sdk.lmprinter.setting.PrintSettings
 import com.brother.sdk.lmprinter.setting.QLPrintSettings
 import com.brother.sdk.lmprinter.setting.RJPrintSettings
@@ -350,15 +352,35 @@ class BrotherNativePrintPlugin :
         return when (model) {
             PrinterModel.RJ_2050 -> RJPrintSettings(model).apply {
                 numCopies = copies
+                scaleMode = PrintImageSettings.ScaleMode.FitPageAspect
+                applyCustomPaper(this, options)
             }
             PrinterModel.QL_820NWB -> QLPrintSettings(model).apply {
                 numCopies = copies
                 isAutoCut = autoCut
+                scaleMode = PrintImageSettings.ScaleMode.FitPageAspect
                 paperType?.let {
                     runCatching { labelSize = QLPrintSettings.LabelSize.valueOf(it) }
                 }
             }
             else -> throw FlutterFailure("invalidArgument", "Modello non supportato: $model")
+        }
+    }
+
+    /**
+     * Imposta la custom paper size per la serie RJ.
+     *
+     * Per la serie RJ/TD la documentazione ufficiale Brother richiede di
+     * specificare la carta: per la RJ-2050 (2") si usa un rotolo da 2.0 inch
+     * con margini zero (vedi guida "Printing Image/PDF", sezione RJ/TD).
+     */
+    private fun applyCustomPaper(settings: RJPrintSettings, options: Map<String, Any?>) {
+        val margins = CustomPaperSize.Margins(0f, 0f, 0f, 0f)
+        val widthMm = (options["paperWidthMm"] as? Number)?.toFloat()
+        settings.customPaperSize = if (widthMm != null && widthMm > 0f) {
+            CustomPaperSize.newRollPaperSize(widthMm, margins, CustomPaperSize.Unit.Mm)
+        } else {
+            CustomPaperSize.newRollPaperSize(2.0f, margins, CustomPaperSize.Unit.Inch)
         }
     }
 

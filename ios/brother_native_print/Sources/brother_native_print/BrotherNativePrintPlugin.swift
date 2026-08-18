@@ -302,6 +302,8 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         throw PluginFailure(code: "unknown", message: "Impossibile creare RJPrintSettings")
       }
       settings.numCopies = UInt(copies)
+      settings.scaleMode = .fitPageAspect
+      applyCustomPaper(settings, options: options)
       return settings
     case .QL_820NWB:
       guard let settings = BRLMQLPrintSettings(defaultPrintSettingsWith: .QL_820NWB) else {
@@ -309,12 +311,35 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       }
       settings.numCopies = UInt(copies)
       settings.autoCut = autoCut
+      settings.scaleMode = .fitPageAspect
       if let paperType = paperType, let label = Self.labelSize(from: paperType) {
         settings.labelSize = label
       }
       return settings
     @unknown default:
       throw PluginFailure(code: "invalidArgument", message: "Modello non supportato")
+    }
+  }
+
+  /// Imposta la custom paper size per la serie RJ.
+  ///
+  /// Per la serie RJ/TD la documentazione ufficiale Brother richiede di
+  /// specificare la carta: per la RJ-2050 (2") si usa un rotolo da 2.0 inch
+  /// con margini zero (vedi guida "Printing Image/PDF", sezione RJ/TD).
+  private func applyCustomPaper(_ settings: BRLMRJPrintSettings, options: [String: Any]) {
+    let margins = BRLMCustomPaperSizeMarginsMake(0, 0, 0, 0)
+    if let widthMm = options["paperWidthMm"] as? Double, widthMm > 0 {
+      settings.customPaperSize = BRLMCustomPaperSize(
+        rollWithTapeWidth: CGFloat(widthMm),
+        margins: margins,
+        unitOfLength: .mm
+      )
+    } else {
+      settings.customPaperSize = BRLMCustomPaperSize(
+        rollWithTapeWidth: 2.0,
+        margins: margins,
+        unitOfLength: .inch
+      )
     }
   }
 

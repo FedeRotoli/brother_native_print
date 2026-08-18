@@ -52,12 +52,25 @@ class PrintOptions {
   /// Taglio automatico a fine stampa (solo modelli QL).
   final bool autoCut;
 
-  const PrintOptions({this.copies = 1, this.paperType, this.autoCut = true});
+  /// Larghezza del rotolo in mm per la carta personalizzata (modelli RJ).
+  ///
+  /// Le stampanti RJ (es. RJ-2050) con carta non riconosciuta dall'SDK
+  /// (es. rotoli non originali Brother) richiedono una custom paper size
+  /// esplicita. Default: 58 mm per RJ-2050.
+  final double? paperWidthMm;
+
+  const PrintOptions({
+    this.copies = 1,
+    this.paperType,
+    this.autoCut = true,
+    this.paperWidthMm,
+  });
 
   Map<String, dynamic> toMap() => {
     'copies': copies,
     'paperType': paperType,
     'autoCut': autoCut,
+    'paperWidthMm': paperWidthMm,
   };
 }
 

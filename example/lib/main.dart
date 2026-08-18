@@ -166,9 +166,13 @@ class _MyAppState extends State<MyApp> {
     return byteData!.buffer.asUint8List();
   }
 
-  /// Genera un PDF di prova di una pagina A4 in memoria.
+  /// Genera un PDF di prova in memoria, usando un font embedded (Roboto)
+  /// per supportare anche i caratteri accentati/Unicode.
   Future<Uint8List> _buildTestPdf() async {
-    final doc = pw.Document();
+    final font = pw.Font.ttf(
+      await rootBundle.load('assets/fonts/Roboto-Regular.ttf'),
+    );
+    final doc = pw.Document(theme: pw.ThemeData.withFont(base: font));
     doc.addPage(
       pw.Page(
         pageFormat: PdfPageFormat.a4,
