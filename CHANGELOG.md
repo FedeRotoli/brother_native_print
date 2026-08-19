@@ -1,4 +1,4 @@
-## Unreleased
+## 0.1.1
 
 - **Faster discovery**: `discoverPrinters()` now streams results through a new
   `discoverPrintersStream()` API. Already-paired Bluetooth printers are
