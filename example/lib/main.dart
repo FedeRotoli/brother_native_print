@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -96,7 +97,7 @@ class _MyAppState extends State<MyApp> {
       final image = await _buildTestImage();
       final result = await _plugin.printImage(
         image,
-        options: const PrintOptions(copies: 1, autoCut: true),
+        options: await _printOptions(),
       );
       _appendLog(
         result.success
@@ -116,7 +117,7 @@ class _MyAppState extends State<MyApp> {
       final pdfBytes = await _buildTestPdf();
       final result = await _plugin.printPdf(
         pdfBytes,
-        options: const PrintOptions(copies: 1, autoCut: true),
+        options: await _printOptions(),
       );
       _appendLog(
         result.success
@@ -127,6 +128,57 @@ class _MyAppState extends State<MyApp> {
       _appendLog('Errore stampa: ${e.code} ${e.message}');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Costruisce le PrintOptions scegliendo il file .bin del custom paper in
+  /// base alla stampante connessa, estraendolo dagli asset in un file
+  /// temporaneo leggibile dal lato nativo.
+  Future<PrintOptions> _printOptions({int copies = 1}) async {
+    final printer = _selected;
+    String? binPath;
+    if (printer != null) {
+      final asset = _paperBinAsset(printer, 58);
+      if (asset != null) {
+        binPath = await _extractPaperBin(asset);
+        _appendLog(
+          binPath != null
+              ? 'Custom paper: $asset'
+              : 'Custom paper non trovato: $asset',
+        );
+      }
+    }
+    return PrintOptions(
+      copies: copies,
+      autoCut: true,
+      paperWidthMm: 58,
+      paperBinPath: binPath,
+    );
+  }
+
+  /// Mappa (modello, larghezza carta) → asset .bin.
+  String? _paperBinAsset(BrotherPrinter printer, double widthMm) {
+    final model = printer.model.toUpperCase();
+    final width = widthMm.round();
+    if (model.contains('RJ-2050')) {
+      return 'assets/custom_paper/CustomRJ2050Paper/RJ2050-RD${width}mm.bin';
+    }
+    return null;
+  }
+
+  /// Estrae un asset .bin in un file temporaneo e ne restituisce il percorso.
+  Future<String?> _extractPaperBin(String assetPath) async {
+    try {
+      final data = await rootBundle.load(assetPath);
+      final name = assetPath.split('/').last;
+      final file = File('${Directory.systemTemp.path}/$name');
+      await file.writeAsBytes(
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+        flush: true,
+      );
+      return file.path;
+    } catch (_) {
+      return null;
     }
   }
 

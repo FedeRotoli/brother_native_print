@@ -353,12 +353,16 @@ class BrotherNativePrintPlugin :
             PrinterModel.RJ_2050 -> RJPrintSettings(model).apply {
                 numCopies = copies
                 scaleMode = PrintImageSettings.ScaleMode.FitPageAspect
+                // Via Bluetooth la richiesta di stato pre-stampa può fallire
+                // ("Failed to get status") su alcuni modelli RJ: la saltiamo.
+                isSkipStatusCheck = true
                 applyCustomPaper(this, options)
             }
             PrinterModel.QL_820NWB -> QLPrintSettings(model).apply {
                 numCopies = copies
                 isAutoCut = autoCut
                 scaleMode = PrintImageSettings.ScaleMode.FitPageAspect
+                isSkipStatusCheck = true
                 paperType?.let {
                     runCatching { labelSize = QLPrintSettings.LabelSize.valueOf(it) }
                 }
@@ -375,13 +379,23 @@ class BrotherNativePrintPlugin :
      * con margini zero (vedi guida "Printing Image/PDF", sezione RJ/TD).
      */
     private fun applyCustomPaper(settings: RJPrintSettings, options: Map<String, Any?>) {
-        val margins = CustomPaperSize.Margins(0f, 0f, 0f, 0f)
-        val widthMm = (options["paperWidthMm"] as? Number)?.toFloat()
-        settings.customPaperSize = if (widthMm != null && widthMm > 0f) {
-            CustomPaperSize.newRollPaperSize(widthMm, margins, CustomPaperSize.Unit.Mm)
-        } else {
-            CustomPaperSize.newRollPaperSize(2.0f, margins, CustomPaperSize.Unit.Inch)
+        // Se l'app ha fornito un file .bin (Brother Paper Size Setup Tool) usa
+        // quello: è la definizione carta più affidabile per la stampante connessa.
+        val binPath = options["paperBinPath"] as? String
+        if (!binPath.isNullOrEmpty()) {
+            settings.customPaperSize = CustomPaperSize.newFile(binPath)
+            return
         }
+        // Allineato a iOS: margini top=3, left=2, bottom=3, right=2 (mm) e
+        // rotolo di default da 58 mm. Con 2 mm per lato l'area stampabile
+        // diventa 54 mm (testina RJ-2050: 432 dot a 203 dpi).
+        val margins = CustomPaperSize.Margins(3f, 2f, 3f, 2f)
+        val widthMm = (options["paperWidthMm"] as? Number)?.toFloat() ?: 58f
+        settings.customPaperSize = CustomPaperSize.newRollPaperSize(
+            widthMm,
+            margins,
+            CustomPaperSize.Unit.Mm
+        )
     }
 
     private fun printResultMap(error: PrintError?): Map<String, Any?> {

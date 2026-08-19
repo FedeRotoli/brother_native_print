@@ -62,6 +62,29 @@ flutter:
   # non ASCII come le lettere accentate).
   assets:
     - assets/fonts/Roboto-Regular.ttf
+    # File .bin dei custom paper (generati con Brother Paper Size Setup Tool).
+    # Flutter NON include ricorsivamente le sottocartelle di un asset directory,
+    # quindi va elencata esplicitamente ogni sottocartella.
+    - assets/custom_paper/
+    - assets/custom_paper/CustomRJ2050Paper/
+    - assets/custom_paper/CustomRJ2150Paper/
+    - assets/custom_paper/CustomRJ3050AiPaper/
+    - assets/custom_paper/CustomRJ3050Paper/
+    - assets/custom_paper/CustomRJ3150AiPaper/
+    - assets/custom_paper/CustomRJ3150Paper/
+    - assets/custom_paper/CustomRJ3230BPaper/
+    - assets/custom_paper/CustomRJ3250WBPaper/
+    - assets/custom_paper/CustomRJ4030AiPaper/
+    - assets/custom_paper/CustomRJ4030Paper/
+    - assets/custom_paper/CustomRJ4040Paper/
+    - assets/custom_paper/CustomRJ4230Paper/
+    - assets/custom_paper/CustomRJ4250Paper/
+    - assets/custom_paper/CustomTD2120NPaper/
+    - assets/custom_paper/CustomTD2125NPaper/
+    - assets/custom_paper/CustomTD2125NWBPaper/
+    - assets/custom_paper/CustomTD2130NPaper/
+    - assets/custom_paper/CustomTD2135NWBPaper/
+    - assets/custom_paper/CustomTD4550Paper/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

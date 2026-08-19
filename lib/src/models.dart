@@ -59,11 +59,20 @@ class PrintOptions {
   /// esplicita. Default: 58 mm per RJ-2050.
   final double? paperWidthMm;
 
+  /// Percorso (sul dispositivo) di un file `.bin` con la definizione custom
+  /// paper della stampante, generato con Brother Paper Size Setup Tool.
+  ///
+  /// Se valorizzato, ha la precedenza su `paperWidthMm` e viene usato come
+  /// custom paper tramite `BRLMCustomPaperSize(file:)` (iOS) o
+  /// `CustomPaperSize.newFile()` (Android).
+  final String? paperBinPath;
+
   const PrintOptions({
     this.copies = 1,
     this.paperType,
     this.autoCut = true,
     this.paperWidthMm,
+    this.paperBinPath,
   });
 
   Map<String, dynamic> toMap() => {
@@ -71,6 +80,7 @@ class PrintOptions {
     'paperType': paperType,
     'autoCut': autoCut,
     'paperWidthMm': paperWidthMm,
+    'paperBinPath': paperBinPath,
   };
 }
 

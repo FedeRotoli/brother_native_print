@@ -303,6 +303,9 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       }
       settings.numCopies = UInt(copies)
       settings.scaleMode = .fitPageAspect
+      // Via Bluetooth la richiesta di stato pre-stampa può fallire
+      // ("Failed to get status") su alcuni modelli RJ: la saltiamo.
+      settings.skipStatusCheck = true
       applyCustomPaper(settings, options: options)
       return settings
     case .QL_820NWB:
@@ -312,6 +315,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       settings.numCopies = UInt(copies)
       settings.autoCut = autoCut
       settings.scaleMode = .fitPageAspect
+      settings.skipStatusCheck = true
       if let paperType = paperType, let label = Self.labelSize(from: paperType) {
         settings.labelSize = label
       }
@@ -325,9 +329,18 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   ///
   /// Per la serie RJ/TD la documentazione ufficiale Brother richiede di
   /// specificare la carta: per la RJ-2050 (2") si usa un rotolo da 2.0 inch
-  /// con margini zero (vedi guida "Printing Image/PDF", sezione RJ/TD).
+  /// con margini laterali da 2 mm (profilo RJ 58mm di RJ Utility).
   private func applyCustomPaper(_ settings: BRLMRJPrintSettings, options: [String: Any]) {
-    let margins = BRLMCustomPaperSizeMarginsMake(0, 0, 0, 0)
+    // Se l'app ha fornito un file .bin (Brother Paper Size Setup Tool) usa
+    // quello: è la definizione carta più affidabile per la stampante connessa.
+    if let binPath = options["paperBinPath"] as? String, !binPath.isEmpty {
+      settings.customPaperSize = BRLMCustomPaperSize(file: URL(fileURLWithPath: binPath))
+      return
+    }
+    // Allineato ad Android: margini top=3, left=2, bottom=3, right=2 (mm) e
+    // rotolo di default da 58 mm. Con 2 mm per lato l'area stampabile
+    // diventa 54 mm (testina RJ-2050: 432 dot a 203 dpi).
+    let margins = BRLMCustomPaperSizeMarginsMake(3, 2, 3, 2)
     if let widthMm = options["paperWidthMm"] as? Double, widthMm > 0 {
       settings.customPaperSize = BRLMCustomPaperSize(
         rollWithTapeWidth: CGFloat(widthMm),
@@ -336,9 +349,9 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       )
     } else {
       settings.customPaperSize = BRLMCustomPaperSize(
-        rollWithTapeWidth: 2.0,
+        rollWithTapeWidth: 58.0,
         margins: margins,
-        unitOfLength: .inch
+        unitOfLength: .mm
       )
     }
   }
