@@ -23,8 +23,8 @@ void main() {
       );
       expect(printers, isA<List<BrotherPrinter>>());
     } on PlatformException catch (e) {
-      // Senza permessi Bluetooth/posizione la discovery fallisce con un
-      // errore chiaro invece di crashare.
+      // Without Bluetooth/location permissions the discovery fails with a
+      // clear error instead of crashing.
       expect(e.code, isNotNull);
     }
   });

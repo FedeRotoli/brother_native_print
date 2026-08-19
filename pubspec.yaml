@@ -1,7 +1,17 @@
 name: brother_native_print
-description: "A new Flutter plugin project."
-version: 0.0.1
-homepage:
+description: >-
+  Flutter plugin to print images and PDFs to Brother label and mobile printers
+  (RJ and QL series) over Wi-Fi, Bluetooth (BLE) and USB on Android.
+version: 0.1.0
+repository: https://github.com/FedeRotoli/brother_native_print
+issue_tracker: https://github.com/FedeRotoli/brother_native_print/issues
+documentation: https://pub.dev/documentation/brother_native_print/latest/
+topics:
+  - printing
+  - printer
+  - brother
+  - bluetooth
+  - label-printer
 
 environment:
   sdk: ^3.12.2
@@ -40,14 +50,32 @@ flutter:
       ios:
         pluginClass: BrotherNativePrintPlugin
 
-  # To add assets to your plugin package, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
-  #
-  # For details regarding assets in packages, see
-  # https://flutter.dev/to/asset-from-package
-  #
+  # Custom paper .bin files (generated with Brother Paper Size Setup Tool),
+  # bundled with the package so applications can use them without copying them.
+  # Flutter does NOT include subfolders of an asset directory recursively,
+  # so each subfolder must be listed explicitly. They are accessible at
+  # `packages/brother_native_print/custom_paper/...` (see BrotherCustomPaper).
+  assets:
+    - custom_paper/CustomRJ2050Paper/
+    - custom_paper/CustomRJ2150Paper/
+    - custom_paper/CustomRJ3050AiPaper/
+    - custom_paper/CustomRJ3050Paper/
+    - custom_paper/CustomRJ3150AiPaper/
+    - custom_paper/CustomRJ3150Paper/
+    - custom_paper/CustomRJ3230BPaper/
+    - custom_paper/CustomRJ3250WBPaper/
+    - custom_paper/CustomRJ4030AiPaper/
+    - custom_paper/CustomRJ4030Paper/
+    - custom_paper/CustomRJ4040Paper/
+    - custom_paper/CustomRJ4230Paper/
+    - custom_paper/CustomRJ4250Paper/
+    - custom_paper/CustomTD2120NPaper/
+    - custom_paper/CustomTD2125NPaper/
+    - custom_paper/CustomTD2125NWBPaper/
+    - custom_paper/CustomTD2130NPaper/
+    - custom_paper/CustomTD2135NWBPaper/
+    - custom_paper/CustomTD4550Paper/
+
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
 

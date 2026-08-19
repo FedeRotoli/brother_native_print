@@ -28,9 +28,9 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  # Genera il PDF di prova in memoria per la demo di stampa.
+  # Generates the in-memory test PDF for the print demo.
   pdf: ^3.11.3
-  # Richiesta runtime dei permessi Bluetooth/Localizzazione (Android 12+).
+  # Runtime Bluetooth/Location permission requests (Android 12+).
   permission_handler: ^12.0.1
 
 dev_dependencies:
@@ -57,34 +57,15 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # Font Roboto (Apache 2.0) incluso per generare PDF con supporto Unicode
-  # (i font base-14 di dart_pdf, come Helvetica, non supportano caratteri
-  # non ASCII come le lettere accentate).
+  # Roboto font (Apache 2.0) included to generate PDFs with Unicode support
+  # (dart_pdf's base-14 fonts, such as Helvetica, do not support non-ASCII
+  # characters like accented letters).
   assets:
     - assets/fonts/Roboto-Regular.ttf
-    # File .bin dei custom paper (generati con Brother Paper Size Setup Tool).
-    # Flutter NON include ricorsivamente le sottocartelle di un asset directory,
-    # quindi va elencata esplicitamente ogni sottocartella.
-    - assets/custom_paper/
-    - assets/custom_paper/CustomRJ2050Paper/
-    - assets/custom_paper/CustomRJ2150Paper/
-    - assets/custom_paper/CustomRJ3050AiPaper/
-    - assets/custom_paper/CustomRJ3050Paper/
-    - assets/custom_paper/CustomRJ3150AiPaper/
-    - assets/custom_paper/CustomRJ3150Paper/
-    - assets/custom_paper/CustomRJ3230BPaper/
-    - assets/custom_paper/CustomRJ3250WBPaper/
-    - assets/custom_paper/CustomRJ4030AiPaper/
-    - assets/custom_paper/CustomRJ4030Paper/
-    - assets/custom_paper/CustomRJ4040Paper/
-    - assets/custom_paper/CustomRJ4230Paper/
-    - assets/custom_paper/CustomRJ4250Paper/
-    - assets/custom_paper/CustomTD2120NPaper/
-    - assets/custom_paper/CustomTD2125NPaper/
-    - assets/custom_paper/CustomTD2125NWBPaper/
-    - assets/custom_paper/CustomTD2130NPaper/
-    - assets/custom_paper/CustomTD2135NWBPaper/
-    - assets/custom_paper/CustomTD4550Paper/
+
+  # The custom paper .bin files are bundled by the brother_native_print plugin
+  # itself (see its pubspec.yaml), so the example loads them from the package
+  # via BrotherCustomPaper instead of shipping its own copies.
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

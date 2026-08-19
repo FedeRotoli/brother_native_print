@@ -22,6 +22,16 @@ abstract class BrotherNativePrintPlatform extends PlatformInterface {
     Duration timeout = const Duration(seconds: 10),
   }) => throw UnimplementedError('discoverPrinters() not implemented.');
 
+  /// Starts discovery and yields each printer as soon as it is found.
+  ///
+  /// Already-paired Bluetooth printers are emitted first (no waiting for the
+  /// scans); Wi-Fi, BLE and USB results arrive as the searches complete. The
+  /// stream completes when all the requested searches finish.
+  Stream<BrotherPrinter> discoverPrintersStream({
+    required Set<BrotherConnectionType> connectionTypes,
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw UnimplementedError('discoverPrintersStream() not implemented.');
+
   Future<bool> connect(BrotherPrinter printer) =>
       throw UnimplementedError('connect() not implemented.');
 

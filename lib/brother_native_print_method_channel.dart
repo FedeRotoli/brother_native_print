@@ -5,18 +5,43 @@ import 'src/models.dart';
 class MethodChannelBrotherNativePrint extends BrotherNativePrintPlatform {
   final methodChannel = const MethodChannel('brother_native_print/methods');
   final eventChannel = const EventChannel('brother_native_print/status');
+  final _discoveryChannel = const EventChannel(
+    'brother_native_print/discovery',
+  );
 
   @override
   Future<List<BrotherPrinter>> discoverPrinters({
     required Set<BrotherConnectionType> connectionTypes,
     Duration timeout = const Duration(seconds: 10),
   }) async {
-    final result = await methodChannel
-        .invokeMethod<List<dynamic>>('discoverPrinters', {
+    final printers = <BrotherPrinter>[];
+    await for (final printer in discoverPrintersStream(
+      connectionTypes: connectionTypes,
+      timeout: timeout,
+    )) {
+      printers.add(printer);
+    }
+    return printers;
+  }
+
+  @override
+  Stream<BrotherPrinter> discoverPrintersStream({
+    required Set<BrotherConnectionType> connectionTypes,
+    Duration timeout = const Duration(seconds: 10),
+  }) {
+    // The native side starts the discovery when the stream is listened to:
+    // it emits the already-paired Bluetooth printers first, then the Wi-Fi,
+    // BLE and USB results as the searches complete, and finally closes the
+    // stream. Subscribing before anything is emitted avoids missing results.
+    return _discoveryChannel
+        .receiveBroadcastStream({
           'connectionTypes': connectionTypes.map((c) => c.name).toList(),
           'timeoutMs': timeout.inMilliseconds,
+        })
+        .map((event) {
+          final map = Map<String, dynamic>.from(event as Map);
+          return BrotherPrinter.fromMap(map);
         });
-    return (result ?? []).map((e) => BrotherPrinter.fromMap(e as Map)).toList();
   }
 
   @override
@@ -69,7 +94,7 @@ class MethodChannelBrotherNativePrint extends BrotherNativePrintPlatform {
       success: false,
       error: BrotherPrintError(
         code,
-        (errorMap?['message'] as String?) ?? 'Errore di stampa sconosciuto',
+        (errorMap?['message'] as String?) ?? 'Unknown print error',
       ),
     );
   }

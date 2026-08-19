@@ -23,6 +23,19 @@ class MockBrotherNativePrintPlatform
   ]);
 
   @override
+  Stream<BrotherPrinter> discoverPrintersStream({
+    required Set<BrotherConnectionType> connectionTypes,
+    Duration timeout = const Duration(seconds: 10),
+  }) => Stream.value(
+    const BrotherPrinter(
+      model: 'QL-820NWB',
+      connectionType: BrotherConnectionType.bluetooth,
+      macAddress: '11:22:33:44:55:66',
+      serialNumber: 'SN456',
+    ),
+  );
+
+  @override
   Future<bool> connect(BrotherPrinter printer) => Future.value(true);
 
   @override
@@ -58,5 +71,19 @@ void main() {
     expect(printers, hasLength(1));
     expect(printers.first.model, 'RJ-2050');
     expect(printers.first.ipAddress, '192.168.1.10');
+  });
+
+  test('discoverPrintersStream', () async {
+    BrotherNativePrint brotherNativePrintPlugin = BrotherNativePrint();
+    MockBrotherNativePrintPlatform fakePlatform =
+        MockBrotherNativePrintPlatform();
+    BrotherNativePrintPlatform.instance = fakePlatform;
+
+    final printers = await brotherNativePrintPlugin
+        .discoverPrintersStream()
+        .toList();
+    expect(printers, hasLength(1));
+    expect(printers.first.model, 'QL-820NWB');
+    expect(printers.first.connectionType, BrotherConnectionType.bluetooth);
   });
 }

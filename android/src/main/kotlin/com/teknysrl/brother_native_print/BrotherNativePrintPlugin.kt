@@ -27,15 +27,17 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Plugin Flutter per stampanti Brother RJ-2050 e QL-820NWB.
+ * Flutter plugin for Brother RJ-2050 and QL-820NWB printers.
  *
- * Nomi delle classi SDK verificati sull'AAR BrotherPrintLibrary.aar
+ * SDK class names verified against the BrotherPrintLibrary.aar
  * (Brother Print SDK for Android, package `com.brother.sdk.lmprinter`).
  */
 class BrotherNativePrintPlugin :
@@ -45,6 +47,7 @@ class BrotherNativePrintPlugin :
 
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
+    private lateinit var discoveryChannel: EventChannel
     private var context: Context? = null
     private var eventSink: EventChannel.EventSink? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -53,7 +56,7 @@ class BrotherNativePrintPlugin :
         private const val TAG = "BrotherNativePrint"
     }
 
-    /** Canali trovati nell'ultima discovery, indicizzati per riaprire la connessione. */
+    /** Channels found in the last discovery, indexed to reopen the connection. */
     private val discoveredChannels = HashMap<String, Channel>()
     private var currentDriver: PrinterDriver? = null
     private var currentModel: PrinterModel? = null
@@ -64,17 +67,12 @@ class BrotherNativePrintPlugin :
         methodChannel.setMethodCallHandler(this)
         eventChannel = EventChannel(binding.binaryMessenger, "brother_native_print/status")
         eventChannel.setStreamHandler(this)
+        discoveryChannel = EventChannel(binding.binaryMessenger, "brother_native_print/discovery")
+        discoveryChannel.setStreamHandler(discoveryStreamHandler)
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
-            "discoverPrinters" -> scope.launch {
-                try {
-                    result.success(discoverPrinters(call))
-                } catch (e: Exception) {
-                    result.error(failureCode(e), e.message, null)
-                }
-            }
             "connect" -> scope.launch {
                 try {
                     result.success(connect(call))
@@ -114,81 +112,167 @@ class BrotherNativePrintPlugin :
     }
 
     // ------------------------------------------------------------------
-    // Discovery
+    // Discovery (streaming)
     // ------------------------------------------------------------------
+    //
+    // Discovery is exposed as a stream (`brother_native_print/discovery`
+    // EventChannel): the already-paired classic Bluetooth printers are emitted
+    // first (no waiting), then the Wi-Fi, BLE and USB searches run in parallel
+    // and each printer is pushed to the stream as soon as it is found. The
+    // stream is closed with `endOfStream()` when every requested search
+    // finishes. This avoids the old behaviour where each blocking search ran
+    // sequentially for the whole timeout (~sum of the timeouts).
 
-    private fun discoverPrinters(call: MethodCall): List<Map<String, Any?>> {
-        val ctx = context ?: throw IllegalStateException("Plugin non inizializzato")
-        val connectionTypes =
-            call.argument<List<String>>("connectionTypes")?.toSet() ?: setOf("wifi", "bluetooth")
-        val timeoutMs = call.argument<Int>("timeoutMs") ?: 10_000
-        val durationSec = (timeoutMs / 1000.0).coerceAtLeast(1.0)
+    /** Event sink of the discovery channel. */
+    private var discoveryEventSink: EventChannel.EventSink? = null
+    private var discoveryJob: Job? = null
 
-        val channels = LinkedHashMap<String, Channel>()
-        if ("wifi" in connectionTypes) {
-            runCatching { searchNetwork(ctx, durationSec) }
-                .onFailure { Log.w(TAG, "Ricerca Wi-Fi fallita: ${it.message}") }
-                .getOrDefault(emptyList())
-                .forEach { channels[channelKey(it)] = it }
-        }
-        if ("bluetooth" in connectionTypes) {
-            val problem = ensureBluetoothPermissions()
-            if (problem != null) {
-                // Non blocca la discovery: registra il problema e continua con
-                // gli altri canali richiesti (es. Wi-Fi).
-                Log.w(TAG, "Discovery Bluetooth saltata: ${describeBluetoothProblem(problem)}")
-            } else {
-                runCatching { searchBle(ctx, durationSec) }
-                    .onFailure { Log.w(TAG, "Ricerca BLE fallita: ${it.message}") }
-                    .getOrDefault(emptyList())
-                    .forEach { channels[channelKey(it)] = it }
-                // Bluetooth classico (SPP): tentativo aggiuntivo per i modelli
-                // che lo supportano (RJ-2050, QL-820NWB usano SPP classico).
-                runCatching { PrinterSearcher.startBluetoothSearch(ctx).channels.toList() }
-                    .onFailure { Log.w(TAG, "Ricerca Bluetooth classico fallita: ${it.message}") }
-                    .getOrDefault(emptyList())
-                    .forEach { channels[channelKey(it)] = it }
+    /** Bumped on every start/cancel to drop emissions from stale searches. */
+    private var discoveryGeneration = 0L
+
+    private val discoveryStreamHandler = object : EventChannel.StreamHandler {
+        override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+            synchronized(this@BrotherNativePrintPlugin) {
+                discoveryEventSink = events
+                discoveredChannels.clear()
             }
-        }
-        if ("usb" in connectionTypes) {
-            runCatching { PrinterSearcher.startUSBSearch(ctx).channels.toList() }
-                .onFailure { Log.w(TAG, "Ricerca USB fallita: ${it.message}") }
-                .getOrDefault(emptyList())
-                .forEach { channels[channelKey(it)] = it }
-        }
-
-        synchronized(this) {
-            discoveredChannels.clear()
-            channels.forEach { (key, channel) -> discoveredChannels[key] = channel }
+            val args = arguments as? Map<*, *> ?: emptyMap<String, Any?>()
+            val connectionTypes =
+                (args["connectionTypes"] as? List<*>)?.map { it.toString() }?.toSet()
+                    ?: setOf("wifi", "bluetooth")
+            val timeoutMs = (args["timeoutMs"] as? Number)?.toInt() ?: 10_000
+            startDiscoveryStreaming(connectionTypes, timeoutMs)
         }
 
-        // Nessun filtro sul modello: vengono restituite tutte le stampanti
-        // Brother compatibili trovate dall'SDK.
-        return channels.values.map { channelToMap(it) }
+        override fun onCancel(arguments: Any?) {
+            cancelDiscovery()
+            synchronized(this@BrotherNativePrintPlugin) { discoveryEventSink = null }
+        }
     }
 
-    private fun searchNetwork(ctx: Context, durationSec: Double): List<Channel> {
+    private fun startDiscoveryStreaming(connectionTypes: Set<String>, timeoutMs: Int) {
+        // Stop any in-flight discovery (also aborts the SDK scans).
+        cancelDiscovery()
+
+        val ctx = context ?: run {
+            synchronized(this) { discoveryEventSink }?.error(
+                "pluginNotInitialized", "Plugin not initialized", null
+            )
+            return
+        }
+        val generation = ++discoveryGeneration
+        val durationSec = (timeoutMs / 1000.0).coerceAtLeast(1.0)
+
+        discoveryJob = scope.launch {
+            // Fast path: already-paired classic Bluetooth devices are emitted
+            // immediately, without waiting for the Wi-Fi/BLE scans.
+            if ("bluetooth" in connectionTypes) {
+                val problem = ensureBluetoothPermissions()
+                if (problem != null) {
+                    Log.w(TAG, "Bluetooth discovery skipped: ${describeBluetoothProblem(problem)}")
+                } else {
+                    runCatching { PrinterSearcher.startBluetoothSearch(ctx).channels.toList() }
+                        .onSuccess { list ->
+                            Log.i(TAG, "Classic Bluetooth: ${list.size} paired device(s)")
+                            list.forEach { emitChannel(it, generation) }
+                        }
+                        .onFailure { Log.w(TAG, "Classic Bluetooth search failed: ${it.message}") }
+                }
+            }
+
+            // The Wi-Fi, BLE and USB searches run in parallel: the total time
+            // is ~max(search durations), not the sum of the timeouts.
+            val jobs = mutableListOf<Job>()
+            if ("wifi" in connectionTypes) {
+                jobs += launch {
+                    runCatching { searchNetworkStreaming(ctx, durationSec, generation) }
+                        .onFailure { Log.w(TAG, "Wi-Fi search failed: ${it.message}") }
+                }
+            }
+            if ("bluetooth" in connectionTypes) {
+                val problem = ensureBluetoothPermissions()
+                if (problem != null) {
+                    Log.w(TAG, "BLE discovery skipped: ${describeBluetoothProblem(problem)}")
+                } else {
+                    jobs += launch {
+                        runCatching { searchBleStreaming(ctx, durationSec, generation) }
+                            .onFailure { Log.w(TAG, "BLE search failed: ${it.message}") }
+                    }
+                }
+            }
+            if ("usb" in connectionTypes) {
+                jobs += launch {
+                    runCatching { PrinterSearcher.startUSBSearch(ctx).channels.toList() }
+                        .onSuccess { list -> list.forEach { emitChannel(it, generation) } }
+                        .onFailure { Log.w(TAG, "USB search failed: ${it.message}") }
+                }
+            }
+
+            jobs.joinAll()
+            endDiscovery(generation)
+        }
+    }
+
+    /** Blocking Wi-Fi search that streams every channel as it is found. */
+    private fun searchNetworkStreaming(ctx: Context, durationSec: Double, generation: Long) {
         val result = PrinterSearcher.startNetworkSearch(
             ctx,
             NetworkSearchOption(durationSec, false)
-        ) { /* i canali vengono raccolti dal risultato sincrono */ }
+        ) { channel -> emitChannel(channel, generation) }
         val error = result.error
         if (error != null) {
-            throw FlutterFailure("discoverFailed", "Ricerca Wi-Fi fallita: ${error.code}")
+            throw FlutterFailure("discoverFailed", "Wi-Fi search failed: ${error.code}")
         }
-        return result.channels.toList()
     }
 
-    private fun searchBle(ctx: Context, durationSec: Double): List<Channel> {
+    /** Blocking BLE search that streams every channel as it is found. */
+    private fun searchBleStreaming(ctx: Context, durationSec: Double, generation: Long) {
         val result = PrinterSearcher.startBLESearch(
             ctx,
             BLESearchOption(durationSec)
-        ) { /* i canali vengono raccolti dal risultato sincrono */ }
+        ) { channel -> emitChannel(channel, generation) }
         val error = result.error
         if (error != null) {
-            throw FlutterFailure("discoverFailed", "Ricerca BLE fallita: ${error.code}")
+            throw FlutterFailure("discoverFailed", "BLE search failed: ${error.code}")
         }
-        return result.channels.toList()
+    }
+
+    /**
+     * Deduplicates by channel key, caches the channel (so [connect] can reopen
+     * it) and pushes the printer to the discovery stream.
+     */
+    private fun emitChannel(channel: Channel, generation: Long) {
+        if (generation != discoveryGeneration) return
+        val key = channelKey(channel)
+        val shouldEmit = synchronized(this) {
+            if (discoveredChannels.containsKey(key)) {
+                false
+            } else {
+                discoveredChannels[key] = channel
+                true
+            }
+        }
+        if (!shouldEmit) return
+        val sink = synchronized(this) { discoveryEventSink } ?: return
+        sink.success(channelToMap(channel))
+    }
+
+    /** Closes the discovery stream when every requested search finished. */
+    private fun endDiscovery(generation: Long) {
+        if (generation != discoveryGeneration) return
+        val sink = synchronized(this) { discoveryEventSink } ?: return
+        sink.endOfStream()
+    }
+
+    /** Stops the current discovery and asks the SDK to abort the scans. */
+    private fun cancelDiscovery() {
+        discoveryGeneration++
+        discoveryJob?.cancel()
+        discoveryJob = null
+        // Make the blocking SDK searches return early instead of waiting the
+        // full timeout.
+        runCatching { PrinterSearcher.cancelNetworkSearch() }
+        runCatching { PrinterSearcher.cancelBLESearch() }
     }
 
     private fun ensureBluetoothPermissions(): String? {
@@ -210,28 +294,28 @@ class BrotherNativePrintPlugin :
     }
 
     private fun describeBluetoothProblem(problem: String): String = when (problem) {
-        "bluetoothDisabled" -> "Bluetooth disattivato: attivarlo prima della ricerca"
-        "bluetoothUnsupported" -> "Dispositivo senza supporto Bluetooth"
-        else -> "Permessi Bluetooth mancanti: concederli nell'app host " +
-            "(BLUETOOTH_SCAN/BLUETOOTH_CONNECT su Android 12+, ACCESS_FINE_LOCATION prima)"
+        "bluetoothDisabled" -> "Bluetooth is disabled: enable it before searching"
+        "bluetoothUnsupported" -> "This device does not support Bluetooth"
+        else -> "Bluetooth permissions are missing: grant them in the host app " +
+            "(BLUETOOTH_SCAN/BLUETOOTH_CONNECT on Android 12+, ACCESS_FINE_LOCATION before)"
     }
 
     // ------------------------------------------------------------------
-    // Connessione
+    // Connection
     // ------------------------------------------------------------------
 
     private fun connect(call: MethodCall): Boolean {
         val args = call.arguments as? Map<*, *>
-            ?: throw FlutterFailure("invalidArgument", "Argomenti connessione mancanti")
+            ?: throw FlutterFailure("invalidArgument", "Missing connection arguments")
         val modelName = args["model"] as? String
-            ?: throw FlutterFailure("invalidArgument", "Campo 'model' mancante")
+            ?: throw FlutterFailure("invalidArgument", "Missing 'model' field")
         val model = when {
             modelName.equals("RJ-2050", ignoreCase = true) -> PrinterModel.RJ_2050
             modelName.equals("QL-820NWB", ignoreCase = true) -> PrinterModel.QL_820NWB
-            else -> throw FlutterFailure("invalidArgument", "Modello non supportato: $modelName")
+            else -> throw FlutterFailure("invalidArgument", "Unsupported model: $modelName")
         }
         val connectionType = args["connectionType"] as? String
-            ?: throw FlutterFailure("invalidArgument", "Campo 'connectionType' mancante")
+            ?: throw FlutterFailure("invalidArgument", "Missing 'connectionType' field")
         val ip = args["ipAddress"] as? String
         val mac = args["macAddress"] as? String
         val serial = args["serialNumber"] as? String
@@ -244,11 +328,11 @@ class BrotherNativePrintPlugin :
             if (openError != null) {
                 throw FlutterFailure(
                     mapOpenChannelError(openError.code),
-                    openError.errorRecoverySuggestion ?: "Impossibile aprire il canale"
+                    openError.errorRecoverySuggestion ?: "Unable to open the channel"
                 )
             }
             val driver = openResult.driver
-                ?: throw FlutterFailure("communicationLost", "Driver non disponibile")
+                ?: throw FlutterFailure("communicationLost", "Driver not available")
             runCatching { currentDriver?.closeChannel() }
             currentDriver = driver
             currentModel = model
@@ -270,11 +354,11 @@ class BrotherNativePrintPlugin :
         }
         synchronized(this) { discoveredChannels[key] }?.let { return it }
 
-        val ctx = context ?: throw IllegalStateException("Plugin non inizializzato")
+        val ctx = context ?: throw IllegalStateException("Plugin not initialized")
         return when (connectionType) {
             "wifi" -> {
                 val address = ip
-                    ?: throw FlutterFailure("invalidArgument", "Indirizzo IP mancante")
+                    ?: throw FlutterFailure("invalidArgument", "Missing IP address")
                 Channel.newWifiChannel(address)
             }
             "bluetooth" -> {
@@ -285,34 +369,34 @@ class BrotherNativePrintPlugin :
                 val address = mac
                     ?: throw FlutterFailure(
                         "invalidArgument",
-                        "Indirizzo MAC mancante: per il Bluetooth eseguire prima " +
-                            "discoverPrinters e connettersi al risultato trovato"
+                        "Missing MAC address: for Bluetooth, call discoverPrinters first " +
+                            "and connect to a found printer"
                     )
-                // Il canale BLE dell'SDK si costruisce a partire dall'informazione
-                // pubblicizzata dal dispositivo; se non è disponibile dalla discovery,
-                // si tenta con l'indirizzo MAC ricevuto da Dart.
+                // The SDK BLE channel is built from the information advertised by
+                // the device; if it is not available from discovery, fall back to
+                // the MAC address received from Dart.
                 Channel.newBluetoothLowEnergyChannel(address, ctx, adapter)
             }
             "usb" -> throw FlutterFailure(
                 "printerUnreachable",
-                "Connessione USB possibile solo tramite stampante trovata in discoverPrinters"
+                "USB connection is only possible through a printer found in discoverPrinters"
             )
-            else -> throw FlutterFailure("invalidArgument", "Tipo di connessione non supportato")
+            else -> throw FlutterFailure("invalidArgument", "Unsupported connection type")
         }
     }
 
     // ------------------------------------------------------------------
-    // Stampa
+    // Printing
     // ------------------------------------------------------------------
 
     private fun printImage(call: MethodCall): Map<String, Any?> {
         val driver = requireDriver()
         val imageBytes = call.argument<ByteArray>("imageBytes")
-            ?: throw FlutterFailure("invalidArgument", "Bytes immagine mancanti")
+            ?: throw FlutterFailure("invalidArgument", "Missing image bytes")
         val options = call.argument<Map<String, Any?>>("options") ?: emptyMap()
 
         val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-            ?: throw FlutterFailure("invalidArgument", "Formato immagine non valido")
+            ?: throw FlutterFailure("invalidArgument", "Invalid image format")
         try {
             val error = driver.printImage(bitmap, createSettings(options))
             return printResultMap(error)
@@ -323,9 +407,9 @@ class BrotherNativePrintPlugin :
 
     private fun printPdf(call: MethodCall): Map<String, Any?> {
         val driver = requireDriver()
-        val ctx = context ?: throw IllegalStateException("Plugin non inizializzato")
+        val ctx = context ?: throw IllegalStateException("Plugin not initialized")
         val pdfBytes = call.argument<ByteArray>("pdfBytes")
-            ?: throw FlutterFailure("invalidArgument", "Bytes PDF mancanti")
+            ?: throw FlutterFailure("invalidArgument", "Missing PDF bytes")
         val options = call.argument<Map<String, Any?>>("options") ?: emptyMap()
 
         val file = File(ctx.cacheDir, "brother_print_${System.currentTimeMillis()}.pdf")
@@ -340,12 +424,12 @@ class BrotherNativePrintPlugin :
     private fun requireDriver(): PrinterDriver =
         currentDriver ?: throw FlutterFailure(
             "printerUnreachable",
-            "Nessuna stampante connessa: chiamare connect() prima di stampare"
+            "No printer connected: call connect() before printing"
         )
 
     private fun createSettings(options: Map<String, Any?>): PrintSettings {
         val model = currentModel
-            ?: throw FlutterFailure("printerUnreachable", "Modello non impostato")
+            ?: throw FlutterFailure("printerUnreachable", "Model not set")
         val copies = (options["copies"] as? Number)?.toInt()?.coerceIn(1, 99) ?: 1
         val autoCut = options["autoCut"] as? Boolean ?: true
         val paperType = options["paperType"] as? String
@@ -353,8 +437,8 @@ class BrotherNativePrintPlugin :
             PrinterModel.RJ_2050 -> RJPrintSettings(model).apply {
                 numCopies = copies
                 scaleMode = PrintImageSettings.ScaleMode.FitPageAspect
-                // Via Bluetooth la richiesta di stato pre-stampa può fallire
-                // ("Failed to get status") su alcuni modelli RJ: la saltiamo.
+                // Over Bluetooth the pre-print status request can fail
+                // ("Failed to get status") on some RJ models: skip it.
                 isSkipStatusCheck = true
                 applyCustomPaper(this, options)
             }
@@ -367,28 +451,28 @@ class BrotherNativePrintPlugin :
                     runCatching { labelSize = QLPrintSettings.LabelSize.valueOf(it) }
                 }
             }
-            else -> throw FlutterFailure("invalidArgument", "Modello non supportato: $model")
+            else -> throw FlutterFailure("invalidArgument", "Unsupported model: $model")
         }
     }
 
     /**
-     * Imposta la custom paper size per la serie RJ.
+     * Applies the custom paper size for the RJ series.
      *
-     * Per la serie RJ/TD la documentazione ufficiale Brother richiede di
-     * specificare la carta: per la RJ-2050 (2") si usa un rotolo da 2.0 inch
-     * con margini zero (vedi guida "Printing Image/PDF", sezione RJ/TD).
+     * For the RJ/TD series the official Brother documentation requires the
+     * paper to be specified: for the RJ-2050 (2") a 2.0 inch roll with zero
+     * margins is used (see the "Printing Image/PDF" guide, RJ/TD section).
      */
     private fun applyCustomPaper(settings: RJPrintSettings, options: Map<String, Any?>) {
-        // Se l'app ha fornito un file .bin (Brother Paper Size Setup Tool) usa
-        // quello: è la definizione carta più affidabile per la stampante connessa.
+        // If the app provided a .bin file (Brother Paper Size Setup Tool), use
+        // it: it is the most reliable paper definition for the connected printer.
         val binPath = options["paperBinPath"] as? String
         if (!binPath.isNullOrEmpty()) {
             settings.customPaperSize = CustomPaperSize.newFile(binPath)
             return
         }
-        // Allineato a iOS: margini top=3, left=2, bottom=3, right=2 (mm) e
-        // rotolo di default da 58 mm. Con 2 mm per lato l'area stampabile
-        // diventa 54 mm (testina RJ-2050: 432 dot a 203 dpi).
+        // Aligned with iOS: margins top=3, left=2, bottom=3, right=2 (mm) and a
+        // default 58 mm roll. With 2 mm on each side the printable area becomes
+        // 54 mm (RJ-2050 printhead: 432 dots at 203 dpi).
         val margins = CustomPaperSize.Margins(3f, 2f, 3f, 2f)
         val widthMm = (options["paperWidthMm"] as? Number)?.toFloat() ?: 58f
         settings.customPaperSize = CustomPaperSize.newRollPaperSize(
@@ -427,7 +511,7 @@ class BrotherNativePrintPlugin :
     }
 
     // ------------------------------------------------------------------
-    // Canali -> mappa Dart
+    // Channels -> Dart map
     // ------------------------------------------------------------------
 
     private fun channelKey(channel: Channel): String {
@@ -454,19 +538,19 @@ class BrotherNativePrintPlugin :
             else -> "usb"
         }
         return mapOf(
-            // Nome del modello riportato dall'SDK (es. "RJ-2050", "QL-820NWB").
+            // Model name as reported by the SDK (e.g. "RJ-2050", "QL-820NWB").
             "model" to modelName,
             "connectionType" to connectionType,
             "ipAddress" to (info?.get(Channel.ExtraInfoKey.IpAddress)
                 ?: if (channel.channelType == Channel.ChannelType.Wifi) channel.channelInfo else null),
             "macAddress" to info?.get(Channel.ExtraInfoKey.MACAddress),
-            // NB: nell'SDK la chiave è "SerialNubmer" (typo ufficiale di Brother).
+            // NB: the SDK key is "SerialNubmer" (official Brother typo).
             "serialNumber" to (info?.get(Channel.ExtraInfoKey.SerialNubmer) ?: ""),
         )
     }
 
     // ------------------------------------------------------------------
-    // Stato
+    // Status
     // ------------------------------------------------------------------
 
     private fun emitState(state: String, error: Map<String, Any?>? = null) {
@@ -493,8 +577,10 @@ class BrotherNativePrintPlugin :
             currentDriver = null
             discoveredChannels.clear()
         }
+        cancelDiscovery()
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
+        discoveryChannel.setStreamHandler(null)
         scope.cancel()
     }
 

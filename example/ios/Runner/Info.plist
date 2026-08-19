@@ -27,11 +27,11 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Serve per cercare e collegarsi alle stampanti Brother via Bluetooth</string>
+	<string>Used to search for and connect to Brother printers over Bluetooth</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>Serve per cercare e collegarsi alle stampanti Brother via Bluetooth</string>
+	<string>Used to search for and connect to Brother printers over Bluetooth</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Serve per cercare le stampanti Brother sulla rete locale</string>
+	<string>Used to search for Brother printers on your local network</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ipp._tcp</string>

@@ -2,10 +2,10 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        // Repository Maven locale con l'AAR dell'SDK Brother, dichiarato nel
-        // progetto plugin. Va registrato anche qui perché le dipendenze dei
-        // plugin inclusi come subproject vengono risolte con i repository
-        // del progetto root dell'app host.
+        // Local Maven repository containing the Brother SDK AAR, declared in
+        // the plugin project. It must be registered here as well because the
+        // dependencies of plugins included as subprojects are resolved using
+        // the root project's repositories of the host app.
         maven { url = uri("${rootProject.projectDir}/../../android/maven-repo") }
     }
 }

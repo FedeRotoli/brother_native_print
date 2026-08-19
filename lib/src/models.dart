@@ -1,11 +1,11 @@
-/// Tipo di connessione usata per raggiungere la stampante.
+/// Transport used to reach a printer.
 enum BrotherConnectionType { wifi, bluetooth, usb }
 
-/// Descrizione di una stampante Brother trovata durante la discovery.
+/// A Brother printer discovered on the network or over Bluetooth.
 class BrotherPrinter {
-  /// Nome del modello come riportato dall'SDK (es. "RJ-2050", "QL-820NWB",
-  /// "TD-4550DNWB", "PT-P900W"...). La discovery non filtra per modello:
-  /// vengono restituite tutte le stampanti Brother compatibili trovate.
+  /// Model name as reported by the SDK (e.g. "RJ-2050", "QL-820NWB",
+  /// "TD-4550DNWB", "PT-P900W"...). Discovery does not filter by model: every
+  /// compatible Brother printer found is returned.
   final String model;
   final BrotherConnectionType connectionType;
   final String? ipAddress;
@@ -39,31 +39,32 @@ class BrotherPrinter {
   };
 }
 
-/// Opzioni di stampa comuni a immagini e PDF.
+/// Print options shared by image and PDF printing.
 class PrintOptions {
+  /// Number of copies to print (defaults to `1`).
   final int copies;
 
-  /// Tipo di carta (etichetta). Rilevante soprattutto per QL-820NWB.
+  /// Label (paper) size. Relevant mainly for QL-820NWB.
   ///
-  /// Valori tipici per QL-820NWB: `RollW62`, `RollW62RB`, `DieCutW62H100`, ecc.
-  /// Se nullo, viene usata l'impostazione predefinita dell'SDK.
+  /// Typical values for QL-820NWB: `RollW62`, `RollW62RB`, `DieCutW62H100`, ...
+  /// When `null`, the SDK default is used.
   final String? paperType;
 
-  /// Taglio automatico a fine stampa (solo modelli QL).
+  /// Whether to auto-cut after printing (QL models only, defaults to `true`).
   final bool autoCut;
 
-  /// Larghezza del rotolo in mm per la carta personalizzata (modelli RJ).
+  /// Roll width in mm for custom paper (RJ models).
   ///
-  /// Le stampanti RJ (es. RJ-2050) con carta non riconosciuta dall'SDK
-  /// (es. rotoli non originali Brother) richiedono una custom paper size
-  /// esplicita. Default: 58 mm per RJ-2050.
+  /// RJ printers (e.g. RJ-2050) with rolls that are not recognized by the SDK
+  /// (e.g. third-party rolls) require an explicit custom paper size. Default:
+  /// 58 mm for the RJ-2050.
   final double? paperWidthMm;
 
-  /// Percorso (sul dispositivo) di un file `.bin` con la definizione custom
-  /// paper della stampante, generato con Brother Paper Size Setup Tool.
+  /// Path (on the device) to a `.bin` file containing the printer's custom
+  /// paper definition, generated with Brother Paper Size Setup Tool.
   ///
-  /// Se valorizzato, ha la precedenza su `paperWidthMm` e viene usato come
-  /// custom paper tramite `BRLMCustomPaperSize(file:)` (iOS) o
+  /// When provided, it takes precedence over [paperWidthMm] and is used as a
+  /// custom paper via `BRLMCustomPaperSize(file:)` (iOS) or
   /// `CustomPaperSize.newFile()` (Android).
   final String? paperBinPath;
 
@@ -84,38 +85,65 @@ class PrintOptions {
   };
 }
 
-/// Codici di errore normalizzati, indipendenti dalla piattaforma.
+/// Normalized, platform-independent error codes.
 enum BrotherPrintErrorCode {
+  /// The printer could not be reached or no printer is connected.
   printerUnreachable,
+
+  /// Bluetooth is disabled on the device.
   bluetoothDisabled,
+
+  /// Required runtime permissions are missing.
   permissionMissing,
+
+  /// The printer is out of paper.
   outOfPaper,
+
+  /// The printer cover is open.
   coverOpen,
+
+  /// Communication with the printer was lost.
   communicationLost,
+
+  /// The operation timed out.
   timeout,
+
+  /// Any other, unclassified error.
   unknown,
 }
 
-/// Errore di stampa normalizzato restituito dal plugin.
+/// A normalized print error returned by the plugin.
 class BrotherPrintError {
+  /// Machine-readable error code.
   final BrotherPrintErrorCode code;
+
+  /// Human-readable error description.
   final String message;
+
   const BrotherPrintError(this.code, this.message);
 }
 
-/// Esito di un'operazione di stampa.
+/// Outcome of a print operation.
 class PrintResult {
+  /// Whether the operation completed successfully.
   final bool success;
+
+  /// Present when [success] is `false`.
   final BrotherPrintError? error;
+
   const PrintResult({required this.success, this.error});
 }
 
-/// Stato di connessione della stampante.
+/// Connection state of the printer.
 enum PrinterConnectionState { connected, disconnected, connecting, error }
 
-/// Snapshot dello stato della stampante emesso sullo status stream.
+/// A snapshot of the printer state emitted on the status stream.
 class PrinterStatus {
+  /// Current connection state.
   final PrinterConnectionState state;
+
+  /// Present when [state] is [PrinterConnectionState.error].
   final BrotherPrintError? error;
+
   const PrinterStatus({required this.state, this.error});
 }

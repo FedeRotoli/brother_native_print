@@ -1,85 +1,110 @@
 # brother_native_print
 
-Plugin Flutter per la stampa con stampanti Brother via WiFi, Bluetooth (BLE) e
-USB (solo Android). La discovery mostra **tutte le stampanti Brother
-compatibili** trovate, senza filtri sul modello; la stampa di immagini e PDF è
-supportata e testata su **RJ-2050** e **QL-820NWB**.
+A Flutter plugin for printing **images** and **PDFs** to Brother label and
+mobile printers over **Wi-Fi**, **Bluetooth / BLE** and **USB (Android only)**.
 
-Basato su:
-- **Android**: Brother Print SDK for Android (`com.brother.sdk.lmprinter`),
-  distribuito come AAR locale tramite repository Maven in `android/maven-repo`.
-- **iOS**: BRLMPrinterKit (variante BT_Net) distribuito come **xcframework binario**
-  via **Swift Package Manager** (nessun CocoaPods).
+[![pub package](https://img.shields.io/pub/v/brother_native_print.svg)](https://pub.dev/packages/brother_native_print)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## API
+Built on top of the official Brother SDKs:
 
-```dart
-final plugin = BrotherNativePrint();
+- **Android** – [Brother Print SDK for Android](https://support.brother.com/)
+  (`com.brother.sdk.lmprinter`), bundled as a local Maven AAR.
+- **iOS** – BRLMPrinterKit (BT_Net variant), bundled as a binary **xcframework**
+  and distributed via **Swift Package Manager** (no CocoaPods).
 
-// Discovery (WiFi + Bluetooth di default)
-final printers = await plugin.discoverPrinters();
+## Features
 
-// Connessione
-await plugin.connect(printer);
+- Discover Brother printers over Wi-Fi, Bluetooth (BLE + classic SPP) and USB
+  (Android).
+- Connect to a printer and keep track of its connection state through a
+  `Stream<PrinterStatus>`.
+- Print **images** (PNG/JPEG) and **PDFs** with configurable options:
+  copies, paper type, auto-cut and custom paper size.
+- Normalized, platform-independent error codes (`BrotherPrintErrorCode`).
+- No model filtering during discovery: every compatible Brother printer that
+  the SDK reports is returned.
 
-// Stato (stream)
-plugin.statusStream.listen((status) => print(status.state));
+## Supported printers
 
-// Stampa
-final result = await plugin.printImage(imageBytes); // PNG/JPEG
-final result = await plugin.printPdf(pdfBytes);
+Discovery shows **all** compatible Brother printers found on the network or via
+Bluetooth, regardless of model.
 
-// Disconnessione
-await plugin.disconnect();
+Printing is implemented and tested on:
+
+| Model | Series | Notes |
+| --- | --- | --- |
+| **RJ-2050** | Mobile / receipt | 2" roll, custom paper support |
+| **QL-820NWB** | Label | Label sizes, auto-cut |
+
+Calling `connect()` with a different model returns `invalidArgument`.
+
+## Platforms
+
+| Platform | Support |
+| --- | --- |
+| Android | ✅ Wi-Fi, Bluetooth/BLE, USB |
+| iOS | ✅ Wi-Fi, Bluetooth/BLE (via discovery; no USB) |
+
+## Installation
+
+Add the dependency to your `pubspec.yaml`:
+
+```yaml
+dependencies:
+  brother_native_print: ^0.1.0
 ```
 
-`PrintOptions` consente `copies`, `paperType` (per QL-820NWB, es. `RollW62`) e
-`autoCut`. Gli errori sono normalizzati in `BrotherPrintErrorCode`.
+Then run `flutter pub get`.
 
-## Setup app host — Android
+## Platform setup
 
-1. L'AAR Brother è pubblicato nel repository Maven locale del plugin
-   (`android/maven-repo`). AGP 9 non supporta dipendenze `.aar` locali dirette
-   quando si compila un AAR, quindi nell'app host va registrato il repository:
+### Android
 
-   ```kotlin
-   // android/build.gradle.kts dell'app host
-   allprojects {
-       repositories {
-           google()
-           mavenCentral()
-           maven { url = uri("$rootDir/<path-del-plugin>/android/maven-repo") }
-       }
-   }
-   ```
+The Brother SDK is published in the plugin's local Maven repository
+(`android/maven-repo`). AGP 9 no longer supports direct local `.aar`
+dependencies when building an AAR, so the host app must register that
+repository. Add this to your app's `android/build.gradle.kts`:
 
-2. Permessi in `AndroidManifest.xml` dell'app host (richiesti dall'app, il
-   plugin fallisce con un errore chiaro se mancano):
+```kotlin
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("$rootDir/<path-to-plugin>/android/maven-repo") }
+    }
+}
+```
 
-   ```xml
-   <uses-permission android:name="android.permission.INTERNET"/>
-   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-   <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
-   <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
-   <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
-   <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
-   ```
+Declare the required permissions in your app's `AndroidManifest.xml`:
 
-   Su Android 12+ vanno anche richiesti a runtime (`BLUETOOTH_SCAN`,
-   `BLUETOOTH_CONNECT`), prima di `discoverPrinters`.
+```xml
+<uses-permission android:name="android.permission.INTERNET"/>
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+```
 
-## Setup app host — iOS (solo SPM)
+On Android 12+ you must also request the runtime permissions
+(`BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`) **before** calling
+`discoverPrinters()` (the example app uses
+[`permission_handler`](https://pub.dev/packages/permission_handler) for this).
 
-1. Abilitare SPM nel tooling: `flutter config --enable-swift-package-manager`.
-2. In `ios/Runner/Info.plist` aggiungere:
+### iOS
+
+1. Enable Swift Package Manager support:
+   `flutter config --enable-swift-package-manager`
+2. Add the following keys to your `ios/Runner/Info.plist`:
 
    ```xml
    <key>NSBluetoothAlwaysUsageDescription</key>
-   <string>Serve per cercare e collegarsi alle stampanti Brother via Bluetooth</string>
+   <string>Used to search for and connect to Brother printers over Bluetooth.</string>
    <key>NSBluetoothPeripheralUsageDescription</key>
-   <string>Serve per cercare e collegarsi alle stampanti Brother via Bluetooth</string>
+   <string>Used to search for and connect to Brother printers over Bluetooth.</string>
    <key>NSLocalNetworkUsageDescription</key>
-   <string>Serve per cercare le stampanti Brother sulla rete locale</string>
+   <string>Used to search for Brother printers on your local network.</string>
    <key>NSBonjourServices</key>
    <array>
        <string>_ipp._tcp</string>
@@ -92,17 +117,132 @@ await plugin.disconnect();
    </array>
    ```
 
-   In Xcode, il plugin appare come **Package Dependencies** con
-   `brother_native_print` e `BRLMPrinterKit`.
+## Quick start
 
-## Limiti noti
+```dart
+import 'package:brother_native_print/brother_native_print.dart';
 
-- Su iOS il canale Bluetooth si ottiene dalla discovery: chiamare
-  `discoverPrinters` e passare a `connect` una stampante trovata.
-- USB supportato solo su Android.
-- La discovery non applica filtri: mostra tutte le stampanti Brother
-  compatibili trovate. La connessione/stampa è supportata e testata solo sui
-  modelli RJ-2050 e QL-820NWB (per gli altri modelli `connect` restituisce
-  `invalidArgument`).
+final plugin = BrotherNativePrint();
+
+// Discover printers (Wi-Fi + Bluetooth by default).
+final printers = await plugin.discoverPrinters();
+
+// Or stream printers as soon as they are found: already-paired Bluetooth
+// printers arrive first, Wi-Fi/BLE results follow as the scans complete.
+final stream = plugin.discoverPrintersStream();
+await for (final printer in stream) {
+  print('Found ${printer.model} (${printer.connectionType.name})');
+}
+
+// Connect to a printer.
+await plugin.connect(printers.first);
+
+// Observe connection state.
+plugin.statusStream.listen((status) => print(status.state));
+
+// Print an image (PNG/JPEG bytes).
+final imageResult = await plugin.printImage(imageBytes);
+
+// Print a PDF (raw bytes).
+final pdfResult = await plugin.printPdf(pdfBytes);
+
+// Disconnect.
+await plugin.disconnect();
+```
+
+### Printing options
+
+`PrintOptions` supports:
+
+| Option | Description |
+| --- | --- |
+| `copies` | Number of copies (default `1`). |
+| `paperType` | Label size, mainly for QL-820NWB (e.g. `RollW62`). When `null`, the SDK default is used. |
+| `autoCut` | Auto-cut after printing (QL models only, default `true`). |
+| `paperWidthMm` | Roll width in mm for custom paper (RJ models, default `58`). |
+| `paperBinPath` | Path (on device) to a `.bin` custom paper definition generated with Brother Paper Size Setup Tool. Takes precedence over `paperWidthMm`. |
+
+### Custom paper (RJ series)
+
+RJ printers require an explicit paper definition. If the roll is not
+recognized by the SDK (e.g. third-party rolls), use a custom paper size:
+
+- provide a `.bin` file (generated with **Brother Paper Size Setup Tool**)
+  via `paperBinPath`, or
+- set the roll width via `paperWidthMm` (the plugin applies the default
+  margins: top/right/bottom/left = 3/2/3/2 mm).
+
+#### Bundled custom papers
+
+The package **ships the custom paper `.bin` files** for the supported RJ/TD
+models as package assets, so applications don't have to copy them. Use the
+[`BrotherCustomPaper`](https://pub.dev/documentation/brother_native_print/latest/brother_native_print/BrotherCustomPaper-class.html)
+helper to resolve and extract one:
+
+```dart
+// Loads the bundled RJ-2050 58mm custom paper into a temp file
+// and returns its path (for PrintOptions.paperBinPath).
+final binPath = await BrotherCustomPaper.binPathFor(
+  model: 'RJ-2050',
+  widthMm: 58,
+);
+
+final result = await plugin.printImage(
+  imageBytes,
+  options: PrintOptions(paperBinPath: binPath),
+);
+```
+
+`assetPathFor()` returns the matching `packages/brother_native_print/...` asset
+path without extracting, and `copyToFile()` copies any of the bundled assets to
+a temporary file. If the model/width you need doesn't follow the
+`<Model>-RD<width>mm.bin` naming convention, pick the exact file from the
+`custom_paper/` folder of the package and pass its asset path to `copyToFile()`.
+
+### Errors
+
+Printing errors are normalized to `BrotherPrintErrorCode`:
+
+```dart
+final result = await plugin.printImage(imageBytes);
+if (!result.success) {
+  switch (result.error!.code) {
+    case BrotherPrintErrorCode.outOfPaper:
+      // Handle out-of-paper...
+    case BrotherPrintErrorCode.communicationLost:
+      // Handle communication loss...
+    default:
+      break;
+  }
+}
+```
+
+## Known limitations
+
+- On iOS the Bluetooth channel can only be obtained through discovery: call
+  `discoverPrinters()` and pass a found printer to `connect()`.
+- USB printing is supported on Android only.
+- Discovery does not filter by model. Connection and printing are supported
+  and tested only on the RJ-2050 and QL-820NWB models (other models return
+  `invalidArgument` from `connect()`).
+
+## Example
+
+Check the [`example/`](example/) folder for a complete demo app that performs
+discovery, connection, image printing, PDF printing and custom paper setup.
+
+## Documentation
+
+- [API reference](https://pub.dev/documentation/brother_native_print/latest/)
+
+## Contributing
+
+Contributions are welcome! Please open an
+[issue](https://github.com/FedeRotoli/brother_native_print/issues) or a
+[pull request](https://github.com/FedeRotoli/brother_native_print/pulls).
+
+## License
+
+[MIT](LICENSE)
 
 

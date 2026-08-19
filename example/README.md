@@ -1,17 +1,40 @@
-# brother_native_print_example
+# brother_native_print example
 
-Demonstrates how to use the brother_native_print plugin.
+A complete demo app for the [`brother_native_print`](https://pub.dev/packages/brother_native_print) plugin.
 
-## Getting Started
+## What it does
 
-This project is a starting point for a Flutter application.
+The app lets you:
 
-A few resources to get you started if this is your first Flutter project:
+- Request the required Bluetooth/location permissions at runtime.
+- Discover Brother printers over Wi-Fi and Bluetooth.
+- Connect to and disconnect from a printer, watching its connection state.
+- Print a generated test **image** (PNG) to the connected printer.
+- Print a generated in-memory **PDF** to the connected printer.
+- Load a **custom paper** definition (`.bin`, bundled with the plugin and
+  extracted via `BrotherCustomPaper`) and apply it when printing to an RJ
+  printer.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Platform setup
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Before running, follow the Android/iOS setup steps described in the
+[plugin README](../README.md#platform-setup).
+
+## Running
+
+```sh
+flutter run
+```
+
+On Android 12+ the app asks for the Bluetooth/location permissions when you
+press the search icon; on iOS, grant Bluetooth and Local Network access when
+prompted.
+
+## Notes
+
+- The test image is a 696x271 px bitmap (RJ-2050 / QL 62 mm format).
+- The test PDF uses the embedded Roboto font so that accented/Unicode
+  characters render correctly.
+- The `.bin` custom paper files are bundled with the plugin package (see the
+  plugin README for details) and are loaded at runtime via
+  `BrotherCustomPaper`, so the example ships no duplicate copies.

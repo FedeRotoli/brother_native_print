@@ -14,14 +14,14 @@ buildscript {
     }
 }
 
-// I repositories a livello di progetto si applicano anche quando questo
-// progetto è incluso come subproject nell'app host Flutter.
+// Project-level repositories also apply when this project is included as a
+// subproject of the Flutter host app.
 repositories {
     google()
     mavenCentral()
-    // Repository Maven locale con l'AAR dell'SDK Brother.
-    // AGP 9 non supporta le dipendenze .aar locali dirette quando si compila
-    // un AAR (bundleDebugAar), quindi l'SDK è pubblicato in android/maven-repo.
+    // Local Maven repository containing the Brother SDK AAR.
+    // AGP 9 does not support direct local .aar dependencies when building an
+    // AAR (bundleDebugAar), so the SDK is published in android/maven-repo.
     maven { url = uri("${projectDir}/maven-repo") }
 }
 

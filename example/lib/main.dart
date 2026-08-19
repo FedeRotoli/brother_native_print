@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -36,7 +35,7 @@ class _MyAppState extends State<MyApp> {
     _statusSubscription = _plugin.statusStream.listen((status) {
       if (!mounted) return;
       setState(() => _state = status.state);
-      _appendLog('Stato: ${status.state.name}');
+      _appendLog('Status: ${status.state.name}');
     });
   }
 
@@ -52,19 +51,30 @@ class _MyAppState extends State<MyApp> {
 
   Future<void> _discover() async {
     setState(() => _busy = true);
+    final found = <BrotherPrinter>[];
     try {
-      // I permessi sono richiesti dall'app host: il plugin fallisce con un
-      // errore chiaro se mancano al momento della discovery Bluetooth.
+      // Permissions are requested by the host app: the plugin fails with a
+      // clear error if they are missing when the Bluetooth discovery runs.
       await [
         Permission.bluetoothScan,
         Permission.bluetoothConnect,
         Permission.locationWhenInUse,
       ].request();
-      final printers = await _plugin.discoverPrinters();
-      setState(() => _printers = printers);
-      _appendLog('Trovate ${printers.length} stampanti');
+      // Streaming discovery: already-paired Bluetooth printers arrive first,
+      // then Wi-Fi/BLE results as the searches complete, so the UI updates
+      // live instead of waiting for the whole discovery to finish.
+      await for (final printer in _plugin.discoverPrintersStream()) {
+        found.add(printer);
+        if (!mounted) return;
+        setState(() {
+          _printers = List.of(found);
+          _log =
+              '[$_state] Found ${printer.model} (${printer.connectionType.name})\n$_log';
+        });
+      }
+      _appendLog('Discovery completed: ${found.length} printers');
     } on PlatformException catch (e) {
-      _appendLog('Discovery fallita: ${e.code} ${e.message}');
+      _appendLog('Discovery failed: ${e.code} ${e.message}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -76,10 +86,10 @@ class _MyAppState extends State<MyApp> {
       final ok = await _plugin.connect(printer);
       setState(() => _selected = printer);
       _appendLog(
-        ok ? 'Connesso a ${printer.serialNumber}' : 'Connessione fallita',
+        ok ? 'Connected to ${printer.serialNumber}' : 'Connection failed',
       );
     } on PlatformException catch (e) {
-      _appendLog('Connessione fallita: ${e.code} ${e.message}');
+      _appendLog('Connection failed: ${e.code} ${e.message}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -88,7 +98,7 @@ class _MyAppState extends State<MyApp> {
   Future<void> _disconnect() async {
     await _plugin.disconnect();
     setState(() => _selected = null);
-    _appendLog('Disconnesso');
+    _appendLog('Disconnected');
   }
 
   Future<void> _printImage() async {
@@ -101,11 +111,11 @@ class _MyAppState extends State<MyApp> {
       );
       _appendLog(
         result.success
-            ? 'Immagine stampata'
-            : 'Errore stampa: ${result.error?.code.name} ${result.error?.message}',
+            ? 'Image printed'
+            : 'Print error: ${result.error?.code.name} ${result.error?.message}',
       );
     } on PlatformException catch (e) {
-      _appendLog('Errore stampa: ${e.code} ${e.message}');
+      _appendLog('Print error: ${e.code} ${e.message}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -121,32 +131,31 @@ class _MyAppState extends State<MyApp> {
       );
       _appendLog(
         result.success
-            ? 'PDF stampato'
-            : 'Errore stampa: ${result.error?.code.name} ${result.error?.message}',
+            ? 'PDF printed'
+            : 'Print error: ${result.error?.code.name} ${result.error?.message}',
       );
     } on PlatformException catch (e) {
-      _appendLog('Errore stampa: ${e.code} ${e.message}');
+      _appendLog('Print error: ${e.code} ${e.message}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  /// Costruisce le PrintOptions scegliendo il file .bin del custom paper in
-  /// base alla stampante connessa, estraendolo dagli asset in un file
-  /// temporaneo leggibile dal lato nativo.
+  /// Builds the [PrintOptions], loading the bundled custom paper .bin for the
+  /// connected printer into a temporary file the native side can read.
   Future<PrintOptions> _printOptions({int copies = 1}) async {
     final printer = _selected;
     String? binPath;
     if (printer != null) {
-      final asset = _paperBinAsset(printer, 58);
-      if (asset != null) {
-        binPath = await _extractPaperBin(asset);
-        _appendLog(
-          binPath != null
-              ? 'Custom paper: $asset'
-              : 'Custom paper non trovato: $asset',
-        );
-      }
+      binPath = await BrotherCustomPaper.binPathFor(
+        model: printer.model,
+        widthMm: 58,
+      );
+      _appendLog(
+        binPath != null
+            ? 'Custom paper loaded: ${printer.model} 58mm'
+            : 'No bundled custom paper for ${printer.model}',
+      );
     }
     return PrintOptions(
       copies: copies,
@@ -156,33 +165,7 @@ class _MyAppState extends State<MyApp> {
     );
   }
 
-  /// Mappa (modello, larghezza carta) → asset .bin.
-  String? _paperBinAsset(BrotherPrinter printer, double widthMm) {
-    final model = printer.model.toUpperCase();
-    final width = widthMm.round();
-    if (model.contains('RJ-2050')) {
-      return 'assets/custom_paper/CustomRJ2050Paper/RJ2050-RD${width}mm.bin';
-    }
-    return null;
-  }
-
-  /// Estrae un asset .bin in un file temporaneo e ne restituisce il percorso.
-  Future<String?> _extractPaperBin(String assetPath) async {
-    try {
-      final data = await rootBundle.load(assetPath);
-      final name = assetPath.split('/').last;
-      final file = File('${Directory.systemTemp.path}/$name');
-      await file.writeAsBytes(
-        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-        flush: true,
-      );
-      return file.path;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Genera una bitmap di prova 696x271 px (formato RJ-2050 / QL 62mm).
+  /// Generates a 696x271 px test bitmap (RJ-2050 / QL 62mm format).
   Future<Uint8List> _buildTestImage() async {
     const width = 696;
     const height = 271;
@@ -218,8 +201,8 @@ class _MyAppState extends State<MyApp> {
     return byteData!.buffer.asUint8List();
   }
 
-  /// Genera un PDF di prova in memoria, usando un font embedded (Roboto)
-  /// per supportare anche i caratteri accentati/Unicode.
+  /// Generates an in-memory test PDF using an embedded font (Roboto) to also
+  /// support accented/Unicode characters.
   Future<Uint8List> _buildTestPdf() async {
     final font = pw.Font.ttf(
       await rootBundle.load('assets/fonts/Roboto-Regular.ttf'),
@@ -247,7 +230,7 @@ class _MyAppState extends State<MyApp> {
           title: const Text('Brother Native Print demo'),
           actions: [
             IconButton(
-              tooltip: 'Cerca stampanti',
+              tooltip: 'Search printers',
               onPressed: _busy ? null : _discover,
               icon: const Icon(Icons.search),
             ),
@@ -271,7 +254,7 @@ class _MyAppState extends State<MyApp> {
                     },
                   ),
                   const SizedBox(width: 8),
-                  Text('Stato: ${_state.name}'),
+                  Text('Status: ${_state.name}'),
                 ],
               ),
               const SizedBox(height: 12),
@@ -279,8 +262,8 @@ class _MyAppState extends State<MyApp> {
                 child: _printers.isEmpty
                     ? const Center(
                         child: Text(
-                          'Nessuna stampante trovata.\n'
-                          'Tocca la lente per cercare.',
+                          'No printers found.\n'
+                          'Tap the search icon to scan.',
                         ),
                       )
                     : ListView.builder(
@@ -312,13 +295,13 @@ class _MyAppState extends State<MyApp> {
                               trailing: selected
                                   ? TextButton(
                                       onPressed: _disconnect,
-                                      child: const Text('Disconnetti'),
+                                      child: const Text('Disconnect'),
                                     )
                                   : TextButton(
                                       onPressed: _busy
                                           ? null
                                           : () => _connect(printer),
-                                      child: const Text('Connetti'),
+                                      child: const Text('Connect'),
                                     ),
                             ),
                           );
@@ -333,12 +316,12 @@ class _MyAppState extends State<MyApp> {
                   ElevatedButton.icon(
                     onPressed: _busy ? null : _printImage,
                     icon: const Icon(Icons.image),
-                    label: const Text('Stampa immagine'),
+                    label: const Text('Print image'),
                   ),
                   ElevatedButton.icon(
                     onPressed: _busy ? null : _printPdf,
                     icon: const Icon(Icons.picture_as_pdf),
-                    label: const Text('Stampa PDF'),
+                    label: const Text('Print PDF'),
                   ),
                 ],
               ),

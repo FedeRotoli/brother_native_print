@@ -4,10 +4,10 @@ import Foundation
 import ImageIO
 import BRLMPrinterKit
 
-// Nomi delle classi SDK verificati sugli header di BRLMPrinterKit.xcframework
-// (variante BT_Net, per RJ-2050 e QL-820NWB che richiedono il Bluetooth).
+// SDK class names verified against the BRLMPrinterKit.xcframework headers
+// (BT_Net variant, for RJ-2050 and QL-820NWB which require Bluetooth).
 
-/// Errore interno del plugin, convertito in FlutterError al confine del canale.
+/// Internal plugin error, converted to FlutterError at the channel boundary.
 private struct PluginFailure: Error {
   let code: String
   let message: String
@@ -16,11 +16,21 @@ private struct PluginFailure: Error {
 public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
   private var eventSink: FlutterEventSink?
 
-  // Canali trovati nell'ultima discovery, per riaprire la connessione.
+  // Channels found in the last discovery, to reopen the connection.
   private var discoveredChannels: [String: BRLMChannel] = [:]
   private var currentDriver: BRLMPrinterDriver?
   private var currentModel: BRLMPrinterModel?
   private let queue = DispatchQueue(label: "brother_native_print.queue", qos: .userInitiated)
+
+  // Discovery streaming
+  private var discoveryEventSink: FlutterEventSink?
+  // Bumped on every start/cancel to drop emissions from stale searches.
+  private var discoveryGeneration = 0
+  private let discoveryQueue = DispatchQueue(
+    label: "brother_native_print.discovery",
+    qos: .userInitiated,
+    attributes: .concurrent
+  )
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let methodChannel = FlutterMethodChannel(
@@ -31,15 +41,22 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       name: "brother_native_print/status",
       binaryMessenger: registrar.messenger()
     )
+    let discoveryChannel = FlutterEventChannel(
+      name: "brother_native_print/discovery",
+      binaryMessenger: registrar.messenger()
+    )
     let instance = BrotherNativePrintPlugin()
     registrar.addMethodCallDelegate(instance, channel: methodChannel)
     eventChannel.setStreamHandler(instance)
+    let discoveryHandler = DiscoveryStreamHandler()
+    discoveryHandler.plugin = instance
+    discoveryChannel.setStreamHandler(discoveryHandler)
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     queue.async { [weak self] in
       guard let self = self else {
-        DispatchQueue.main.async { result(FlutterError(code: "unknown", message: "Plugin rilasciato", details: nil)) }
+        DispatchQueue.main.async { result(FlutterError(code: "unknown", message: "Plugin released", details: nil)) }
         return
       }
       do {
@@ -57,12 +74,10 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
   }
 
-  // MARK: - Metodi
+  // MARK: - Methods
 
   private func handleSync(_ call: FlutterMethodCall) throws -> Any? {
     switch call.method {
-    case "discoverPrinters":
-      return try discoverPrinters(call)
     case "connect":
       return try connect(call)
     case "disconnect":
@@ -77,72 +92,146 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
   }
 
-  // MARK: - Discovery
+  // MARK: - Discovery (streaming)
+  //
+  // Discovery is exposed as a stream (`brother_native_print/discovery`
+  // EventChannel): the already-paired classic Bluetooth printers are emitted
+  // first (no waiting), then the Wi-Fi and BLE searches run in parallel on a
+  // dedicated concurrent queue and each printer is pushed to the stream as
+  // soon as it is found. The stream is closed with `FlutterEndOfEventStream`
+  // when every requested search finishes. This avoids the old behaviour where
+  // each blocking search ran sequentially for the whole timeout (~sum of the
+  // timeouts).
 
-  private func discoverPrinters(_ call: FlutterMethodCall) throws -> [[String: Any?]] {
-    let args = call.arguments as? [String: Any] ?? [:]
-    let connectionTypes = (args["connectionTypes"] as? [String])?.map { $0 } ?? ["wifi", "bluetooth"]
+  private func startDiscoveryStreaming(
+    withArguments arguments: Any?,
+    sink: @escaping FlutterEventSink
+  ) {
+    // Stop any in-flight discovery (also aborts the SDK scans).
+    cancelDiscovery()
+
+    discoveryGeneration += 1
+    let generation = discoveryGeneration
+    discoveryEventSink = sink
+
+    let args = arguments as? [String: Any] ?? [:]
+    let connectionTypes = (args["connectionTypes"] as? [String]) ?? ["wifi", "bluetooth"]
     let timeoutMs = (args["timeoutMs"] as? Int) ?? 10_000
     let duration = max(TimeInterval(timeoutMs) / 1000.0, 1.0)
 
-    var channels: [String: BRLMChannel] = [:]
+    let group = DispatchGroup()
+
+    // Fast path: already-paired classic Bluetooth devices are emitted
+    // immediately, without waiting for the Wi-Fi/BLE scans.
+    if connectionTypes.contains("bluetooth") {
+      group.enter()
+      discoveryQueue.async { [weak self] in
+        defer { group.leave() }
+        guard let self = self else { return }
+        #if targetEnvironment(simulator)
+        print("[BrotherNativePrint] WARNING: the iOS simulator does not support Bluetooth")
+        #endif
+        do { try self.ensureBluetoothAccess() } catch {
+          print("[BrotherNativePrint] Bluetooth access denied: \(error.localizedDescription)")
+          return
+        }
+        let result = BRLMPrinterSearcher.startBluetoothSearch()
+        if result.error.code == .noError {
+          result.channels.forEach { self.emitChannel($0, generation: generation) }
+        } else {
+          print("[BrotherNativePrint] Classic Bluetooth search failed: \(result.error.code.rawValue)")
+        }
+      }
+    }
 
     if connectionTypes.contains("wifi") {
-      let option = BRLMNetworkSearchOption()
-      option.searchDuration = duration
-      let result = BRLMPrinterSearcher.startNetworkSearch(option) { _ in
-        // I canali vengono raccolti dal risultato sincrono.
-      }
-      if result.error.code != .noError {
-        print("[BrotherNativePrint] Ricerca Wi-Fi fallita: \(result.error.code.rawValue)")
-      } else {
-        result.channels.forEach { channels[Self.channelKey($0)] = $0 }
+      group.enter()
+      discoveryQueue.async { [weak self] in
+        defer { group.leave() }
+        guard let self = self else { return }
+        let option = BRLMNetworkSearchOption()
+        option.searchDuration = duration
+        let result = BRLMPrinterSearcher.startNetworkSearch(option) { channel in
+          self.emitChannel(channel, generation: generation)
+        }
+        if result.error.code != .noError {
+          print("[BrotherNativePrint] Wi-Fi search failed: \(result.error.code.rawValue)")
+        }
       }
     }
 
     if connectionTypes.contains("bluetooth") {
-      #if targetEnvironment(simulator)
-      print("[BrotherNativePrint] ATTENZIONE: il simulatore iOS non supporta il Bluetooth")
-      #endif
-      try ensureBluetoothAccess()
-      let option = BRLMBLESearchOption()
-      option.searchDuration = duration
-      let bleResult = BRLMPrinterSearcher.startBLESearch(option) { _ in }
-      if bleResult.error.code == .noError {
-        bleResult.channels.forEach { channels[Self.channelKey($0)] = $0 }
-      } else {
-        print("[BrotherNativePrint] Ricerca BLE fallita: \(bleResult.error.code.rawValue)")
-      }
-      // Bluetooth classico (MFi/SPP): trova solo stampanti GIÀ ACCOPPIATE
-      // in Impostazioni > Bluetooth (i modelli RJ-2050/QL-820NWB usano SPP,
-      // non BLE).
-      let btResult = BRLMPrinterSearcher.startBluetoothSearch()
-      if btResult.error.code == .noError {
-        btResult.channels.forEach { channels[Self.channelKey($0)] = $0 }
-      } else {
-        print("[BrotherNativePrint] Ricerca Bluetooth classico fallita: \(btResult.error.code.rawValue)")
+      group.enter()
+      discoveryQueue.async { [weak self] in
+        defer { group.leave() }
+        guard let self = self else { return }
+        #if targetEnvironment(simulator)
+        print("[BrotherNativePrint] WARNING: the iOS simulator does not support Bluetooth")
+        #endif
+        do { try self.ensureBluetoothAccess() } catch {
+          print("[BrotherNativePrint] Bluetooth access denied: \(error.localizedDescription)")
+          return
+        }
+        let option = BRLMBLESearchOption()
+        option.searchDuration = duration
+        let result = BRLMPrinterSearcher.startBLESearch(option) { channel in
+          self.emitChannel(channel, generation: generation)
+        }
+        if result.error.code != .noError {
+          print("[BrotherNativePrint] BLE search failed: \(result.error.code.rawValue)")
+        }
       }
     }
 
-    print("[BrotherNativePrint] Discovery: trovati \(channels.count) canali")
+    // USB is not supported by the iOS kit: it always returns an empty list.
 
-    // USB non è supportato dal kit iOS: restituisce sempre lista vuota.
-
-    synchronized {
-      discoveredChannels = channels
+    group.notify(queue: .main) { [weak self] in
+      self?.endDiscovery(generation: generation)
     }
+  }
 
-    return channels.values.map { channelToMap($0) }
+  private func emitChannel(_ channel: BRLMChannel, generation: Int) {
+    guard generation == discoveryGeneration else { return }
+    let key = Self.channelKey(channel)
+    let shouldEmit = synchronized { () -> Bool in
+      if discoveredChannels[key] != nil { return false }
+      discoveredChannels[key] = channel
+      return true
+    }
+    guard shouldEmit else { return }
+    let map = channelToMap(channel)
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self, self.discoveryGeneration == generation else { return }
+      self.discoveryEventSink?(map)
+    }
+  }
+
+  private func endDiscovery(generation: Int) {
+    guard generation == discoveryGeneration else { return }
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self, self.discoveryGeneration == generation else { return }
+      self.discoveryEventSink?(FlutterEndOfEventStream)
+      self.discoveryEventSink = nil
+    }
+  }
+
+  private func cancelDiscovery() {
+    discoveryGeneration += 1
+    discoveryEventSink = nil
+    // Make the blocking SDK searches return early instead of waiting the
+    // full timeout.
+    BRLMPrinterSearcher.cancelNetworkSearch()
+    BRLMPrinterSearcher.cancelBLESearch()
   }
 
   private func ensureBluetoothAccess() throws {
-    // iOS 13.1+: autorizzazione Bluetooth da parte dell'utente.
+    // iOS 13.1+: user Bluetooth authorization.
     if #available(iOS 13.1, *) {
       switch CBManager.authorization {
       case .denied, .restricted:
         throw PluginFailure(
           code: "permissionMissing",
-          message: "Accesso Bluetooth negato: abilitarlo nelle impostazioni"
+          message: "Bluetooth access denied: enable it in the settings"
         )
       default:
         break
@@ -150,14 +239,14 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
   }
 
-  // MARK: - Connessione
+  // MARK: - Connection
 
   private func connect(_ call: FlutterMethodCall) throws -> Bool {
     guard let args = call.arguments as? [String: Any] else {
-      throw PluginFailure(code: "invalidArgument", message: "Argomenti connessione mancanti")
+      throw PluginFailure(code: "invalidArgument", message: "Missing connection arguments")
     }
     guard let modelName = args["model"] as? String else {
-      throw PluginFailure(code: "invalidArgument", message: "Campo 'model' mancante")
+      throw PluginFailure(code: "invalidArgument", message: "Missing 'model' field")
     }
     let model: BRLMPrinterModel
     if modelName.caseInsensitiveCompare("RJ-2050") == .orderedSame {
@@ -165,10 +254,10 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     } else if modelName.caseInsensitiveCompare("QL-820NWB") == .orderedSame {
       model = .QL_820NWB
     } else {
-      throw PluginFailure(code: "invalidArgument", message: "Modello non supportato: \(modelName)")
+      throw PluginFailure(code: "invalidArgument", message: "Unsupported model: \(modelName)")
     }
     guard let connectionType = args["connectionType"] as? String else {
-      throw PluginFailure(code: "invalidArgument", message: "Campo 'connectionType' mancante")
+      throw PluginFailure(code: "invalidArgument", message: "Missing 'connectionType' field")
     }
     let ip = args["ipAddress"] as? String
     let mac = args["macAddress"] as? String
@@ -181,11 +270,11 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     if openError.code != .noError {
       throw PluginFailure(
         code: openChannelErrorCode(openError.code),
-        message: openError.errorRecoverySuggestion ?? "Impossibile aprire il canale"
+        message: openError.errorRecoverySuggestion ?? "Unable to open the channel"
       )
     }
     guard let driver = openResult.driver else {
-      throw PluginFailure(code: "communicationLost", message: "Driver non disponibile")
+      throw PluginFailure(code: "communicationLost", message: "Driver not available")
     }
 
     synchronized {
@@ -210,21 +299,20 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     switch type {
     case "wifi":
       guard let address = ip else {
-        throw PluginFailure(code: "invalidArgument", message: "Indirizzo IP mancante")
+        throw PluginFailure(code: "invalidArgument", message: "Missing IP address")
       }
       return BRLMChannel(wifiIPAddress: address)
     case "bluetooth":
-      // Il canale BLE si costruisce a partire dal nome pubblicizzato dal
-      // dispositivo: per il Bluetooth è necessario passare una stampante
-      // trovata con discoverPrinters().
+      // The BLE channel is built from the name advertised by the device: for
+      // Bluetooth you must pass a printer found with discoverPrinters().
       throw PluginFailure(
         code: "printerUnreachable",
-        message: "Per il Bluetooth eseguire prima discoverPrinters e connettersi al risultato trovato"
+        message: "For Bluetooth, call discoverPrinters first and connect to a found printer"
       )
     case "usb":
-      throw PluginFailure(code: "printerUnreachable", message: "USB non supportato su iOS")
+      throw PluginFailure(code: "printerUnreachable", message: "USB is not supported on iOS")
     default:
-      throw PluginFailure(code: "invalidArgument", message: "Tipo di connessione non supportato")
+      throw PluginFailure(code: "invalidArgument", message: "Unsupported connection type")
     }
   }
 
@@ -242,13 +330,13 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   private func printImage(_ call: FlutterMethodCall) throws -> [String: Any?] {
     let driver = try requireDriver()
     guard let args = call.arguments as? [String: Any] else {
-      throw PluginFailure(code: "invalidArgument", message: "Argomenti mancanti")
+      throw PluginFailure(code: "invalidArgument", message: "Missing arguments")
     }
     guard let typedData = args["imageBytes"] as? FlutterStandardTypedData else {
-      throw PluginFailure(code: "invalidArgument", message: "Bytes immagine mancanti")
+      throw PluginFailure(code: "invalidArgument", message: "Missing image bytes")
     }
     guard let cgImage = Self.makeCGImage(from: typedData.data) else {
-      throw PluginFailure(code: "invalidArgument", message: "Formato immagine non valido")
+      throw PluginFailure(code: "invalidArgument", message: "Invalid image format")
     }
     let options = (args["options"] as? [String: Any]) ?? [:]
     let error = driver.printImage(with: cgImage, settings: try createSettings(options))
@@ -258,10 +346,10 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   private func printPdf(_ call: FlutterMethodCall) throws -> [String: Any?] {
     let driver = try requireDriver()
     guard let args = call.arguments as? [String: Any] else {
-      throw PluginFailure(code: "invalidArgument", message: "Argomenti mancanti")
+      throw PluginFailure(code: "invalidArgument", message: "Missing arguments")
     }
     guard let typedData = args["pdfBytes"] as? FlutterStandardTypedData else {
-      throw PluginFailure(code: "invalidArgument", message: "Bytes PDF mancanti")
+      throw PluginFailure(code: "invalidArgument", message: "Missing PDF bytes")
     }
     let options = (args["options"] as? [String: Any]) ?? [:]
 
@@ -271,7 +359,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     do {
       try typedData.data.write(to: url)
     } catch {
-      throw PluginFailure(code: "invalidArgument", message: "Impossibile scrivere il PDF temporaneo")
+      throw PluginFailure(code: "invalidArgument", message: "Unable to write the temporary PDF")
     }
 
     let error = driver.printPDF(with: url, settings: try createSettings(options))
@@ -282,7 +370,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     guard let driver = currentDriver else {
       throw PluginFailure(
         code: "printerUnreachable",
-        message: "Nessuna stampante connessa: chiamare connect() prima di stampare"
+        message: "No printer connected: call connect() before printing"
       )
     }
     return driver
@@ -294,23 +382,23 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     let paperType = options["paperType"] as? String
 
     guard let model = currentModel else {
-      throw PluginFailure(code: "printerUnreachable", message: "Modello non impostato")
+      throw PluginFailure(code: "printerUnreachable", message: "Model not set")
     }
     switch model {
     case .RJ_2050:
       guard let settings = BRLMRJPrintSettings(defaultPrintSettingsWith: .RJ_2050) else {
-        throw PluginFailure(code: "unknown", message: "Impossibile creare RJPrintSettings")
+        throw PluginFailure(code: "unknown", message: "Unable to create RJPrintSettings")
       }
       settings.numCopies = UInt(copies)
       settings.scaleMode = .fitPageAspect
-      // Via Bluetooth la richiesta di stato pre-stampa può fallire
-      // ("Failed to get status") su alcuni modelli RJ: la saltiamo.
+      // Over Bluetooth the pre-print status request can fail
+      // ("Failed to get status") on some RJ models: skip it.
       settings.skipStatusCheck = true
       applyCustomPaper(settings, options: options)
       return settings
     case .QL_820NWB:
       guard let settings = BRLMQLPrintSettings(defaultPrintSettingsWith: .QL_820NWB) else {
-        throw PluginFailure(code: "unknown", message: "Impossibile creare QLPrintSettings")
+        throw PluginFailure(code: "unknown", message: "Unable to create QLPrintSettings")
       }
       settings.numCopies = UInt(copies)
       settings.autoCut = autoCut
@@ -321,25 +409,25 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       }
       return settings
     @unknown default:
-      throw PluginFailure(code: "invalidArgument", message: "Modello non supportato")
+      throw PluginFailure(code: "invalidArgument", message: "Unsupported model")
     }
   }
 
-  /// Imposta la custom paper size per la serie RJ.
+  /// Applies the custom paper size for the RJ series.
   ///
-  /// Per la serie RJ/TD la documentazione ufficiale Brother richiede di
-  /// specificare la carta: per la RJ-2050 (2") si usa un rotolo da 2.0 inch
-  /// con margini laterali da 2 mm (profilo RJ 58mm di RJ Utility).
+  /// For the RJ/TD series the official Brother documentation requires the
+  /// paper to be specified: for the RJ-2050 (2") a 2.0 inch roll with 2 mm
+  /// side margins is used (RJ Utility's 58 mm RJ profile).
   private func applyCustomPaper(_ settings: BRLMRJPrintSettings, options: [String: Any]) {
-    // Se l'app ha fornito un file .bin (Brother Paper Size Setup Tool) usa
-    // quello: è la definizione carta più affidabile per la stampante connessa.
+    // If the app provided a .bin file (Brother Paper Size Setup Tool), use
+    // it: it is the most reliable paper definition for the connected printer.
     if let binPath = options["paperBinPath"] as? String, !binPath.isEmpty {
       settings.customPaperSize = BRLMCustomPaperSize(file: URL(fileURLWithPath: binPath))
       return
     }
-    // Allineato ad Android: margini top=3, left=2, bottom=3, right=2 (mm) e
-    // rotolo di default da 58 mm. Con 2 mm per lato l'area stampabile
-    // diventa 54 mm (testina RJ-2050: 432 dot a 203 dpi).
+    // Aligned with Android: margins top=3, left=2, bottom=3, right=2 (mm) and
+    // a default 58 mm roll. With 2 mm on each side the printable area becomes
+    // 54 mm (RJ-2050 printhead: 432 dots at 203 dpi).
     let margins = BRLMCustomPaperSizeMarginsMake(3, 2, 3, 2)
     if let widthMm = options["paperWidthMm"] as? Double, widthMm > 0 {
       settings.customPaperSize = BRLMCustomPaperSize(
@@ -392,7 +480,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
   }
 
-  // MARK: - Mappatura canali
+  // MARK: - Channel mapping
 
   private static func channelKey(_ channel: BRLMChannel) -> String {
     let info = channel.extraInfo
@@ -429,7 +517,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       connectionType = "usb"
     }
     return [
-      // Nome del modello riportato dall'SDK (es. "RJ-2050", "QL-820NWB").
+      // Model name as reported by the SDK (e.g. "RJ-2050", "QL-820NWB").
       "model": modelName,
       "connectionType": connectionType,
       "ipAddress": (info?[BRLMChannelExtraInfoKeyIpAddress] as? String)
@@ -481,6 +569,25 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   private static func makeCGImage(from data: Data) -> CGImage? {
     guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
     return CGImageSourceCreateImageAtIndex(source, 0, nil)
+  }
+}
+
+/// Stream handler for the discovery channel: starts the streaming discovery
+/// when a listener subscribes and stops it when the listener cancels.
+private class DiscoveryStreamHandler: NSObject, FlutterStreamHandler {
+  weak var plugin: BrotherNativePrintPlugin?
+
+  func onListen(
+    withArguments arguments: Any?,
+    eventSink events: @escaping FlutterEventSink
+  ) -> FlutterError? {
+    plugin?.startDiscoveryStreaming(withArguments: arguments, sink: events)
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    plugin?.cancelDiscovery()
+    return nil
   }
 }
 
