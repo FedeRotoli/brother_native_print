@@ -103,7 +103,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   // each blocking search ran sequentially for the whole timeout (~sum of the
   // timeouts).
 
-  private func startDiscoveryStreaming(
+  fileprivate func startDiscoveryStreaming(
     withArguments arguments: Any?,
     sink: @escaping FlutterEventSink
   ) {
@@ -215,7 +215,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
   }
 
-  private func cancelDiscovery() {
+  fileprivate func cancelDiscovery() {
     discoveryGeneration += 1
     discoveryEventSink = nil
     // Make the blocking SDK searches return early instead of waiting the
