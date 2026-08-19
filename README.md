@@ -226,6 +226,59 @@ if (!result.success) {
   and tested only on the RJ-2050 and QL-820NWB models (other models return
   `invalidArgument` from `connect()`).
 
+## FAQ
+
+### Why can't I find my Bluetooth printer during discovery?
+
+Brother Bluetooth printers must be **paired with the device first, through the
+system Bluetooth settings**, before they can be located. The plugin does **not**
+discover printers that aren't already paired with the phone/tablet, so there is
+no "search for new Bluetooth devices" step inside the app.
+
+To use a Bluetooth printer:
+
+1. Turn the printer on.
+2. Pair it from the OS Bluetooth settings (Android: *Settings → Bluetooth*;
+   iOS: *Settings → Bluetooth*).
+3. Run `discoverPrinters()` / `discoverPrintersStream()` — already-paired
+   printers are reported as soon as the scan starts.
+
+This applies to both classic Bluetooth and BLE, on Android and iOS.
+
+### Are only the highlighted models supported?
+
+Only the models **highlighted in the
+[Supported printers](#supported-printers) table** — the RJ-2050 and the
+QL-820NWB — are tested. However, the package is flexible:
+
+- Discovery reports **all** compatible Brother printers returned by the SDK
+  (no model filtering).
+- The package ships **bundled custom paper definitions for many RJ/TD models**
+  (`custom_paper/`), so paper sizes exist for more printers than the tested
+  ones.
+- Extending support to another printer is a small change: map its model in
+  `connect()` (and provide its custom paper definition if needed). Pull
+  requests for additional models are welcome.
+
+### Why does `connect()` return `invalidArgument` for my model?
+
+Connection and printing are implemented and tested only for the RJ-2050 and
+QL-820NWB models. Passing any other model to `connect()` returns
+`invalidArgument` on purpose — see the previous answer for how to extend
+support to a new printer.
+
+### Why do I need to request Bluetooth/location permissions on Android?
+
+On Android 12+ the OS requires the `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`
+runtime permissions before discovery can run. The example app uses
+[`permission_handler`](https://pub.dev/packages/permission_handler) — make sure
+your app requests these permissions **before** calling `discoverPrinters()`.
+
+### Is USB supported on iOS?
+
+No. USB printing is available on Android only. On iOS, printers can be reached
+over Wi-Fi and Bluetooth/BLE.
+
 ## Example
 
 Check the [`example/`](example/) folder for a complete demo app that performs
