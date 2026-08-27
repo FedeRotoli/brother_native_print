@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
-import 'package:flutter_test/flutter_test.dart';
 import 'package:brother_native_print/brother_native_print.dart';
-import 'package:brother_native_print/brother_native_print_platform_interface.dart';
 import 'package:brother_native_print/brother_native_print_method_channel.dart';
+import 'package:brother_native_print/brother_native_print_platform_interface.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 class MockBrotherNativePrintPlatform
@@ -42,12 +42,23 @@ class MockBrotherNativePrintPlatform
   Future<void> disconnect() => Future.value();
 
   @override
+  Future<void> cancelPrinting() => Future.value();
+
+  @override
   Future<PrintResult> printImage(Uint8List imageBytes, PrintOptions options) =>
       Future.value(const PrintResult(success: true));
 
   @override
   Future<PrintResult> printPdf(Uint8List pdfBytes, PrintOptions options) =>
       Future.value(const PrintResult(success: true));
+
+  @override
+  Future<PrinterHardwareStatus?> getPrinterStatus() async =>
+      const PrinterHardwareStatus(
+        isOk: true,
+        mediaWidthMm: 62,
+        isHeightInfinite: true,
+      );
 
   @override
   Stream<PrinterStatus> get statusStream => const Stream.empty();
@@ -62,8 +73,8 @@ void main() {
   });
 
   test('discoverPrinters', () async {
-    BrotherNativePrint brotherNativePrintPlugin = BrotherNativePrint();
-    MockBrotherNativePrintPlatform fakePlatform =
+    final BrotherNativePrint brotherNativePrintPlugin = BrotherNativePrint();
+    final MockBrotherNativePrintPlatform fakePlatform =
         MockBrotherNativePrintPlatform();
     BrotherNativePrintPlatform.instance = fakePlatform;
 
@@ -74,8 +85,8 @@ void main() {
   });
 
   test('discoverPrintersStream', () async {
-    BrotherNativePrint brotherNativePrintPlugin = BrotherNativePrint();
-    MockBrotherNativePrintPlatform fakePlatform =
+    final BrotherNativePrint brotherNativePrintPlugin = BrotherNativePrint();
+    final MockBrotherNativePrintPlatform fakePlatform =
         MockBrotherNativePrintPlatform();
     BrotherNativePrintPlatform.instance = fakePlatform;
 
@@ -85,5 +96,35 @@ void main() {
     expect(printers, hasLength(1));
     expect(printers.first.model, 'QL-820NWB');
     expect(printers.first.connectionType, BrotherConnectionType.bluetooth);
+  });
+
+  test('getPrinterStatus', () async {
+    final BrotherNativePrint brotherNativePrintPlugin = BrotherNativePrint();
+    final MockBrotherNativePrintPlatform fakePlatform =
+        MockBrotherNativePrintPlatform();
+    BrotherNativePrintPlatform.instance = fakePlatform;
+
+    final status = await brotherNativePrintPlugin.getPrinterStatus();
+    expect(status, isNotNull);
+    expect(status!.isOk, isTrue);
+    expect(status.mediaWidthMm, 62);
+    expect(status.isHeightInfinite, isTrue);
+  });
+
+  test('PrinterHardwareStatus.fromMap', () {
+    final status = PrinterHardwareStatus.fromMap({
+      'isOk': false,
+      'errorCode': 'outOfPaper',
+      'mediaWidthMm': 29,
+      'mediaHeightMm': 90,
+      'isHeightInfinite': false,
+      'detectedPaperType': 'DieCutW29H90',
+    });
+    expect(status.isOk, isFalse);
+    expect(status.errorCode, 'outOfPaper');
+    expect(status.mediaWidthMm, 29);
+    expect(status.mediaHeightMm, 90);
+    expect(status.isHeightInfinite, isFalse);
+    expect(status.detectedPaperType, 'DieCutW29H90');
   });
 }

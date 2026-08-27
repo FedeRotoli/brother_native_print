@@ -4,6 +4,7 @@ import 'src/models.dart';
 
 export 'src/custom_paper.dart';
 export 'src/models.dart';
+export 'src/presets.dart';
 
 /// Public API of the Brother Native Print plugin.
 ///
@@ -69,6 +70,23 @@ class BrotherNativePrint {
 
   /// Closes the connection with the currently connected printer, if any.
   Future<void> disconnect() => BrotherNativePrintPlatform.instance.disconnect();
+
+  /// Asks the SDK to abort any in-flight print operation.
+  ///
+  /// Useful when a print appears stuck (e.g. the SDK is still waiting for the
+  /// end-of-print confirmation over a slow link): it releases the channel so
+  /// a new print can be attempted. Safe to call even when nothing is printing.
+  Future<void> cancelPrinting() =>
+      BrotherNativePrintPlatform.instance.cancelPrinting();
+
+  /// Queries the hardware status of the currently connected printer.
+  ///
+  /// Returns `null` when no printer is connected. The result reports the
+  /// printer error state and the media (label) detected by the printer, which
+  /// helps diagnose print failures (e.g. a label size mismatch or the printer
+  /// being in an unexpected mode).
+  Future<PrinterHardwareStatus?> getPrinterStatus() =>
+      BrotherNativePrintPlatform.instance.getPrinterStatus();
 
   /// Prints an image (PNG or JPEG) encoded in [imageBytes].
   ///

@@ -147,3 +147,56 @@ class PrinterStatus {
 
   const PrinterStatus({required this.state, this.error});
 }
+
+/// Hardware status of the connected printer, as reported by the SDK.
+///
+/// This is the physical printer state (errors and detected media), distinct
+/// from [PrinterStatus] which tracks the connection state. Use
+/// `BrotherNativePrint.getPrinterStatus()` to query it on demand, e.g. to
+/// diagnose why a print fails (label size mismatch, printer in an unexpected
+/// mode, out of paper...).
+class PrinterHardwareStatus {
+  /// True when the SDK reports no printer error.
+  final bool isOk;
+
+  /// Normalized error code (`outOfPaper`, `coverOpen`, `paperJam`, `busy`,
+  /// ...) or `null` when [isOk] is true.
+  final String? errorCode;
+
+  /// Detected media (label/roll) width in mm, `0` when unknown.
+  final int mediaWidthMm;
+
+  /// Detected media height in mm, `0` for continuous rolls or when unknown.
+  final int mediaHeightMm;
+
+  /// True when the media is a continuous roll (infinite height, e.g. RJ or a
+  /// QL roll label).
+  final bool isHeightInfinite;
+
+  /// Exact QL label size detected by the printer (e.g. `RollW62`,
+  /// `RollW62RB`, `DieCutW62H100`), or `null` when unknown or the printer is
+  /// not a QL model.
+  ///
+  /// Pass it as [PrintOptions.paperType] to match the cassette actually loaded
+  /// and avoid the printer's "wrong roll type" error.
+  final String? detectedPaperType;
+
+  const PrinterHardwareStatus({
+    required this.isOk,
+    this.errorCode,
+    this.mediaWidthMm = 0,
+    this.mediaHeightMm = 0,
+    this.isHeightInfinite = false,
+    this.detectedPaperType,
+  });
+
+  factory PrinterHardwareStatus.fromMap(Map<dynamic, dynamic> map) =>
+      PrinterHardwareStatus(
+        isOk: map['isOk'] as bool? ?? false,
+        errorCode: map['errorCode'] as String?,
+        mediaWidthMm: (map['mediaWidthMm'] as num?)?.toInt() ?? 0,
+        mediaHeightMm: (map['mediaHeightMm'] as num?)?.toInt() ?? 0,
+        isHeightInfinite: map['isHeightInfinite'] as bool? ?? false,
+        detectedPaperType: map['detectedPaperType'] as String?,
+      );
+}

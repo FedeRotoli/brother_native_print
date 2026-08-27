@@ -30,9 +30,27 @@ On Android 12+ the app asks for the Bluetooth/location permissions when you
 press the search icon; on iOS, grant Bluetooth and Local Network access when
 prompted.
 
+## Code layout
+
+The app is split into small, focused folders under `lib/src/`:
+
+| Path | Purpose |
+| --- | --- |
+| `screens/home_screen.dart` | The UI (renders the controller state, forwards actions). |
+| `services/printer_controller.dart` | All the plugin logic (discovery, connect, print, status) as a `ChangeNotifier`. |
+| `labels/traceability_label.dart` | Generates the demo PNG label to print. |
+| `labels/test_pdf.dart` | Generates the demo PDF to print. |
+
+The UI never talks to the plugin directly: it reads state from
+`PrinterController` and calls its methods, keeping the widgets free of
+platform logic so the app is easy to read and extend.
+
 ## Notes
 
-- The test image is a 696x271 px bitmap (RJ-2050 / QL 62 mm format).
+- The test image is a 732x420 px bitmap sized for the QL-820NWB **62 mm roll**
+  (`RollW62`, the SDK default). The QL label size is matched to the cassette
+  the printer actually detected (via `getPrinterStatus()`), cached per
+  connection; the RJ-2050 uses the bundled custom paper.
 - The test PDF uses the embedded Roboto font so that accented/Unicode
   characters render correctly.
 - The `.bin` custom paper files are bundled with the plugin package (see the

@@ -150,6 +150,21 @@ final pdfResult = await plugin.printPdf(pdfBytes);
 await plugin.disconnect();
 ```
 
+### Cancelling a stuck print
+
+If a print hangs (e.g. the SDK never receives the end-of-print confirmation
+over a slow Bluetooth/BLE link), abort it with `cancelPrinting()` so the
+channel is released and a new print can be attempted:
+
+```dart
+// e.g. after a timeout:
+await plugin.cancelPrinting();
+```
+
+`cancelPrinting()` is serviced immediately by the native side, even while the
+blocking print call is still running, so it can unblock a stale print. You can
+also call `disconnect()` at any time to release the connection.
+
 ### Printing options
 
 `PrintOptions` supports:
@@ -161,6 +176,53 @@ await plugin.disconnect();
 | `autoCut` | Auto-cut after printing (QL models only, default `true`). |
 | `paperWidthMm` | Roll width in mm for custom paper (RJ models, default `58`). |
 | `paperBinPath` | Path (on device) to a `.bin` custom paper definition generated with Brother Paper Size Setup Tool. Takes precedence over `paperWidthMm`. |
+
+### Presets
+
+Instead of remembering SDK paper codes and roll widths, use the bundled
+[`BrotherPrintPresets`](https://pub.dev/documentation/brother_native_print/latest/brother_native_print/BrotherPrintPresets-class.html)
+templates for the configurations validated on real hardware:
+
+| Preset | Model | Paper |
+| --- | --- | --- |
+| `ql820NwbDieCut29x90` | QL-820NWB | Die-cut 29×90 mm (`DieCutW29H90`) |
+| `ql820NwbRoll62` | QL-820NWB | Roll 62 mm (`RollW62`) |
+| `rj2050Roll58` | RJ-2050 | Roll 58 mm (`paperWidthMm: 58`) |
+
+Each preset maps to `PrintOptions` via `toOptions()` and reports the label
+pixel size (at the printer's dpi) with `imageSize()`, useful to render the
+image to print:
+
+```dart
+// QL-820NWB with the 29×90 mm die-cut cassette.
+final options = BrotherPrintPresets.ql820NwbDieCut29x90.toOptions();
+final result = await plugin.printImage(imageBytes, options: options);
+
+// Size the preview bitmap (343×1063 at 300 dpi).
+final size = BrotherPrintPresets.ql820NwbDieCut29x90.imageSize();
+```
+
+Presets are only a convenience: for any other label, build a `PrintOptions`
+with custom values as usual.
+
+#### Auto-detecting the loaded label
+
+To avoid the printer's "wrong roll type" error, match the preset to the
+cassette actually loaded in the printer by combining `getPrinterStatus()` with
+`forMedia()`:
+
+```dart
+final status = await plugin.getPrinterStatus();
+if (status != null) {
+  final preset = BrotherPrintPresets.forMedia(status);
+  if (preset != null) {
+    final result = await plugin.printImage(
+      imageBytes,
+      options: preset.toOptions(),
+    );
+  }
+}
+```
 
 ### Custom paper (RJ series)
 
@@ -216,6 +278,44 @@ if (!result.success) {
   }
 }
 ```
+
+### Printer status
+
+To diagnose print failures (out of paper, cover open, wrong label size, or a
+printer that does not respond), query the hardware status on demand with
+`getPrinterStatus()`:
+
+```dart
+final status = await plugin.getPrinterStatus(); // null when disconnected
+if (status != null) {
+  print('ok: ${status.isOk}, error: ${status.errorCode}');
+  print('media: ${status.mediaWidthMm} x ${status.mediaHeightMm} mm'
+      ' (roll: ${status.isHeightInfinite})');
+}
+```
+
+`PrinterHardwareStatus` reports the SDK error state (`isOk` / `errorCode`) and
+the media the printer actually detected (`mediaWidthMm`, `mediaHeightMm`,
+`isHeightInfinite`), which is useful to spot a label size mismatch.
+
+## Connection model
+
+The native plugin follows the Brother-recommended pattern **`open channel →
+operation → close channel` for every job**:
+
+- `connect()` validates the printer (opens and closes a probe channel) and
+  stores the logical connection, so the app can keep a `connected` state.
+- `getPrinterStatus()`, `printImage()` and `printPdf()` open a fresh channel,
+  run the operation and **always close the channel** afterwards — also when
+  the operation fails or times out.
+
+This is intentional: Brother printers (notably the QL series over
+Bluetooth/BLE) accept **a single active connection**. Leaving a channel open
+after the first command made them report "busy" and become unreachable until a
+power cycle. Because every operation closes its channel, you can run status
+queries and prints back-to-back without reconnecting; the only cost is a small
+open/close round-trip per operation (a few seconds over BLE). On Android all
+SDK calls run on a dedicated single thread, as required by the SDK.
 
 ## Known limitations
 
@@ -278,6 +378,20 @@ your app requests these permissions **before** calling `discoverPrinters()`.
 
 No. USB printing is available on Android only. On iOS, printers can be reached
 over Wi-Fi and Bluetooth/BLE.
+
+### My printer is stuck as "busy" / unreachable. How do I recover it?
+
+Brother printers (QL series over Bluetooth/BLE especially) accept a **single
+active connection**. If the printer reports "busy" and ignores every command,
+it is holding a stale session. The plugin never leaves a channel open after an
+operation, but a printer stuck in this state by an old version, a crash, or an
+app killed mid-print needs to be cleared:
+
+1. `cancelPrinting()` — aborts an in-flight print (effective only if the SDK
+   has not finished sending the job yet).
+2. `disconnect()` — releases the logical connection.
+3. If it still does not respond, **power-cycle the printer** (or toggle its
+   Bluetooth); it clears the stale session on reboot.
 
 ## Example
 

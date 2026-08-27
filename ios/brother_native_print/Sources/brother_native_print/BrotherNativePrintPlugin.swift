@@ -18,8 +18,13 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
 
   // Channels found in the last discovery, to reopen the connection.
   private var discoveredChannels: [String: BRLMChannel] = [:]
-  private var currentDriver: BRLMPrinterDriver?
+  // Logical connection: the physical channel is opened per operation, so the
+  // printer is never left "busy" (Brother pattern: open -> operation -> close).
+  private var connectedChannel: BRLMChannel?
   private var currentModel: BRLMPrinterModel?
+  // Driver of the operation currently in flight (so cancelPrinting can reach
+  // it from another thread while a print is stuck).
+  private var currentDriver: BRLMPrinterDriver?
   private let queue = DispatchQueue(label: "brother_native_print.queue", qos: .userInitiated)
 
   // Discovery streaming
@@ -53,7 +58,39 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     discoveryChannel.setStreamHandler(discoveryHandler)
   }
 
+  /// Called when the engine detaches the plugin (hot restart, teardown).
+  ///
+  /// Closes the printer channel so the printer is not left "busy": Brother
+  /// BLE/Bluetooth printers accept a single active connection, and if the
+  /// channel stays open the printer stops being discoverable on the next run
+  /// (same as Android's `onDetachedFromEngine`).
+  public func detach(from registrar: FlutterPluginRegistrar) {
+    synchronized {
+      currentDriver?.closeChannel()
+      currentDriver = nil
+      connectedChannel = nil
+      currentModel = nil
+      discoveredChannels.removeAll()
+    }
+    cancelDiscovery()
+    eventSink = nil
+    discoveryEventSink = nil
+  }
+
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    // cancelPrinting and disconnect must be serviced immediately, even while a
+    // blocking print call is stuck on the serial queue: they abort the stuck
+    // call / release the channel, so a stale print cannot block new
+    // communication (which would cause a cascade of timeouts).
+    if call.method == "cancelPrinting" || call.method == "disconnect" {
+      if call.method == "cancelPrinting" {
+        cancelPrinting()
+      } else {
+        disconnect()
+      }
+      DispatchQueue.main.async { result(nil) }
+      return
+    }
     queue.async { [weak self] in
       guard let self = self else {
         DispatchQueue.main.async { result(FlutterError(code: "unknown", message: "Plugin released", details: nil)) }
@@ -87,6 +124,8 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       return try printImage(call)
     case "printPdf":
       return try printPdf(call)
+    case "getStatus":
+      return try getStatus()
     default:
       return FlutterMethodNotImplemented
     }
@@ -265,21 +304,21 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
 
     let channel = try resolveChannel(type: connectionType, ip: ip, mac: mac, serial: serial)
 
-    let openResult = BRLMPrinterDriverGenerator.open(channel)
-    let openError = openResult.error
-    if openError.code != .noError {
+    // Reachability probe: open and immediately close a channel. The actual
+    // data operations open their own channel per call and close it afterwards
+    // (Brother pattern: open -> operation -> close), so the printer is never
+    // left "busy" by a stale session.
+    let probe = BRLMPrinterDriverGenerator.open(channel)
+    if probe.error.code != .noError {
       throw PluginFailure(
-        code: openChannelErrorCode(openError.code),
-        message: openError.errorRecoverySuggestion ?? "Unable to open the channel"
+        code: openChannelErrorCode(probe.error.code),
+        message: probe.error.errorRecoverySuggestion ?? "Unable to open the channel"
       )
     }
-    guard let driver = openResult.driver else {
-      throw PluginFailure(code: "communicationLost", message: "Driver not available")
-    }
+    probe.driver?.closeChannel()
 
     synchronized {
-      currentDriver?.closeChannel()
-      currentDriver = driver
+      connectedChannel = channel
       currentModel = model
     }
     emitState("connected")
@@ -316,19 +355,59 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
   }
 
+  /// Opens the stored channel and returns a fresh driver for this operation.
+  private func openDriver() throws -> BRLMPrinterDriver {
+    guard let channel = synchronized({ connectedChannel }) else {
+      throw PluginFailure(
+        code: "printerUnreachable",
+        message: "No printer connected: call connect() first"
+      )
+    }
+    let openResult = BRLMPrinterDriverGenerator.open(channel)
+    guard openResult.error.code == .noError else {
+      throw PluginFailure(
+        code: openChannelErrorCode(openResult.error.code),
+        message: openResult.error.errorRecoverySuggestion ?? "Unable to open the channel"
+      )
+    }
+    guard let driver = openResult.driver else {
+      throw PluginFailure(code: "communicationLost", message: "Driver not available")
+    }
+    return driver
+  }
+
+  /// Runs [body] on a fresh driver and ALWAYS closes the channel afterwards
+  /// (also on failure), so the printer is never left "busy" by a stale session.
+  private func withDriver<T>(_ body: (BRLMPrinterDriver) throws -> T) throws -> T {
+    let driver = try openDriver()
+    synchronized { currentDriver = driver }
+    defer {
+      synchronized { currentDriver = nil }
+      driver.closeChannel()
+    }
+    return try body(driver)
+  }
+
   private func disconnect() {
     synchronized {
-      currentDriver?.closeChannel()
-      currentDriver = nil
+      // Request an abort of any in-flight operation (safe: it only sets the
+      // SDK flag; the operation closes its own channel on return).
+      currentDriver?.cancelPrinting()
+      connectedChannel = nil
       currentModel = nil
     }
     emitState("disconnected")
   }
 
+  /// Asks the SDK to abort any in-flight print (sets the SDK cancel flag).
+  /// Safe to call from any thread while a print is stuck.
+  private func cancelPrinting() {
+    synchronized { currentDriver }?.cancelPrinting()
+  }
+
   // MARK: - Stampa
 
   private func printImage(_ call: FlutterMethodCall) throws -> [String: Any?] {
-    let driver = try requireDriver()
     guard let args = call.arguments as? [String: Any] else {
       throw PluginFailure(code: "invalidArgument", message: "Missing arguments")
     }
@@ -339,12 +418,14 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       throw PluginFailure(code: "invalidArgument", message: "Invalid image format")
     }
     let options = (args["options"] as? [String: Any]) ?? [:]
-    let error = driver.printImage(with: cgImage, settings: try createSettings(options))
-    return printResultMap(error)
+    let model = try requireModel()
+    return try withDriver { driver in
+      let error = driver.printImage(with: cgImage, settings: try createSettings(options, model: model))
+      return printResultMap(error)
+    }
   }
 
   private func printPdf(_ call: FlutterMethodCall) throws -> [String: Any?] {
-    let driver = try requireDriver()
     guard let args = call.arguments as? [String: Any] else {
       throw PluginFailure(code: "invalidArgument", message: "Missing arguments")
     }
@@ -352,6 +433,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       throw PluginFailure(code: "invalidArgument", message: "Missing PDF bytes")
     }
     let options = (args["options"] as? [String: Any]) ?? [:]
+    let model = try requireModel()
 
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("brother_print_\(UUID().uuidString).pdf")
@@ -362,28 +444,27 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       throw PluginFailure(code: "invalidArgument", message: "Unable to write the temporary PDF")
     }
 
-    let error = driver.printPDF(with: url, settings: try createSettings(options))
-    return printResultMap(error)
+    return try withDriver { driver in
+      let error = driver.printPDF(with: url, settings: try createSettings(options, model: model))
+      return printResultMap(error)
+    }
   }
 
-  private func requireDriver() throws -> BRLMPrinterDriver {
-    guard let driver = currentDriver else {
+  private func requireModel() throws -> BRLMPrinterModel {
+    guard let model = synchronized({ currentModel }) else {
       throw PluginFailure(
         code: "printerUnreachable",
         message: "No printer connected: call connect() before printing"
       )
     }
-    return driver
+    return model
   }
 
-  private func createSettings(_ options: [String: Any]) throws -> BRLMPrintSettingsProtocol {
+  private func createSettings(_ options: [String: Any], model: BRLMPrinterModel) throws -> BRLMPrintSettingsProtocol {
     let copies = min(max((options["copies"] as? Int) ?? 1, 1), 99)
     let autoCut = (options["autoCut"] as? Bool) ?? true
     let paperType = options["paperType"] as? String
 
-    guard let model = currentModel else {
-      throw PluginFailure(code: "printerUnreachable", message: "Model not set")
-    }
     switch model {
     case .RJ_2050:
       guard let settings = BRLMRJPrintSettings(defaultPrintSettingsWith: .RJ_2050) else {
@@ -470,6 +551,112 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         "message": error.errorDescription,
       ],
     ]
+  }
+
+  // MARK: - Printer hardware status
+
+  /// Queries the SDK for the current hardware status, or nil if disconnected.
+  private func getStatus() throws -> [String: Any?]? {
+    guard synchronized({ connectedChannel }) != nil else { return nil }
+    return try withDriver { driver in
+      let result = driver.getPrinterStatus()
+      if result.error.code != .noError {
+        // The status query itself failed (timeout / printer not found).
+        let code: String
+        switch result.error.code {
+        case .timeout: code = "timeout"
+        case .printerNotFound: code = "printerUnreachable"
+        @unknown default: code = "unknown"
+        }
+        return [
+          "isOk": false,
+          "errorCode": code,
+          "mediaWidthMm": 0,
+          "mediaHeightMm": 0,
+          "isHeightInfinite": false,
+        ]
+      }
+      guard let status = result.status else {
+        return [
+          "isOk": false, "errorCode": "unknown",
+          "mediaWidthMm": 0, "mediaHeightMm": 0, "isHeightInfinite": false,
+        ]
+      }
+      let mediaInfo = status.mediaInfo
+      // The exact QL label size the printer detected (e.g. "RollW62",
+      // "DieCutW62H100"): pass it as paperType to avoid "wrong roll type".
+      var detectedPaperType: String?
+      if let media = mediaInfo {
+        var succeeded = false
+        let size = media.getQLLabelSize(&succeeded)
+        if succeeded {
+          detectedPaperType = qlLabelSizeName(size)
+        }
+      }
+      return [
+        "isOk": status.errorCode == .noError,
+        "errorCode": statusErrorCodeName(status.errorCode),
+        "mediaWidthMm": mediaInfo?.width_mm ?? 0,
+        "mediaHeightMm": mediaInfo?.height_mm ?? 0,
+        "isHeightInfinite": mediaInfo?.isHeightInfinite ?? false,
+        "detectedPaperType": detectedPaperType,
+      ]
+    }
+  }
+
+  /// Converts a [BRLMQLPrintSettingsLabelSize] to the same string used by
+  /// [labelSize(from:)] / `PrintOptions.paperType`.
+  private func qlLabelSizeName(_ size: BRLMQLPrintSettingsLabelSize) -> String? {
+    switch size {
+    case .dieCutW17H54: return "DieCutW17H54"
+    case .dieCutW17H87: return "DieCutW17H87"
+    case .dieCutW23H23: return "DieCutW23H23"
+    case .dieCutW29H42: return "DieCutW29H42"
+    case .dieCutW29H90: return "DieCutW29H90"
+    case .dieCutW38H90: return "DieCutW38H90"
+    case .dieCutW39H48: return "DieCutW39H48"
+    case .dieCutW52H29: return "DieCutW52H29"
+    case .dieCutW62H29: return "DieCutW62H29"
+    case .dieCutW62H60: return "DieCutW62H60"
+    case .dieCutW62H75: return "DieCutW62H75"
+    case .dieCutW62H100: return "DieCutW62H100"
+    case .dieCutW60H86: return "DieCutW60H86"
+    case .dieCutW54H29: return "DieCutW54H29"
+    case .dieCutW102H51: return "DieCutW102H51"
+    case .dieCutW102H152: return "DieCutW102H152"
+    case .dieCutW103H164: return "DieCutW103H164"
+    case .rollW12: return "RollW12"
+    case .rollW29: return "RollW29"
+    case .rollW38: return "RollW38"
+    case .rollW50: return "RollW50"
+    case .rollW54: return "RollW54"
+    case .rollW62: return "RollW62"
+    case .rollW62RB: return "RollW62RB"
+    case .rollW102: return "RollW102"
+    case .rollW103: return "RollW103"
+    // The DT and Round variants belong to other printer series (not the
+    // QL-820NWB), so they are not mapped individually: report null.
+    default: return nil
+    }
+  }
+
+  private func statusErrorCodeName(_ code: BRLMPrinterStatusErrorCode) -> String? {
+    switch code {
+    case .noError: return nil
+    case .noPaper: return "outOfPaper"
+    case .coverOpen: return "coverOpen"
+    case .busy: return "busy"
+    case .paperJam: return "paperJam"
+    case .batteryEmpty: return "batteryEmpty"
+    case .batteryTrouble: return "batteryTrouble"
+    case .tubeNotDetected: return "tubeNotDetected"
+    case .motorSlow: return "motorSlow"
+    case .unsupportedCharger: return "unsupportedCharger"
+    case .incompatibleOptionalEquipment: return "incompatibleEquipment"
+    case .systemError: return "systemError"
+    case .anotherError: return "anotherError"
+    @unknown default: return "unknown"
+    }
   }
 
   private func openChannelErrorCode(_ code: BRLMOpenChannelErrorCode) -> String {

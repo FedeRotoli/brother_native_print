@@ -57,32 +57,44 @@ class MethodChannelBrotherNativePrint extends BrotherNativePrintPlatform {
   Future<void> disconnect() => methodChannel.invokeMethod('disconnect');
 
   @override
+  Future<void> cancelPrinting() => methodChannel.invokeMethod('cancelPrinting');
+
+  @override
   Future<PrintResult> printImage(
     Uint8List imageBytes,
     PrintOptions options,
   ) async {
-    final result = await methodChannel.invokeMethod<Map>('printImage', {
-      'imageBytes': imageBytes,
-      'options': options.toMap(),
-    });
+    final result = await methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+      'printImage',
+      {'imageBytes': imageBytes, 'options': options.toMap()},
+    );
     return _toPrintResult(result);
   }
 
   @override
   Future<PrintResult> printPdf(Uint8List pdfBytes, PrintOptions options) async {
-    final result = await methodChannel.invokeMethod<Map>('printPdf', {
-      'pdfBytes': pdfBytes,
-      'options': options.toMap(),
-    });
+    final result = await methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+      'printPdf',
+      {'pdfBytes': pdfBytes, 'options': options.toMap()},
+    );
     return _toPrintResult(result);
   }
 
-  PrintResult _toPrintResult(Map? result) {
+  @override
+  Future<PrinterHardwareStatus?> getPrinterStatus() async {
+    final result = await methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+      'getStatus',
+    );
+    if (result == null) return null;
+    return PrinterHardwareStatus.fromMap(result);
+  }
+
+  PrintResult _toPrintResult(Map<dynamic, dynamic>? result) {
     final success = result?['success'] == true;
     if (success || result == null) {
       return PrintResult(success: success);
     }
-    final errorMap = result['error'] as Map?;
+    final errorMap = result['error'] as Map<dynamic, dynamic>?;
     final codeName = errorMap?['code'] as String?;
     final code = codeName != null
         ? BrotherPrintErrorCode.values.firstWhere(

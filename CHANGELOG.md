@@ -1,3 +1,36 @@
+## 0.2.0
+
+- **Robust connection management**: the native side now follows the Brother
+  pattern `open → operation → close` and opens a fresh channel for every status
+  query and print job, always closing it afterwards (also on failure). This
+  fixes printers (notably the QL-820NWB over Bluetooth/BLE) reporting "busy"
+  and becoming unreachable after the first command: they accept a single
+  active connection, which was being left open. `connect()` validates
+  reachability (open + close probe) and keeps the logical connection, while
+  `getPrinterStatus()` / `printImage()` / `printPdf()` open and close their
+  own channel.
+- **Android**: every SDK driver call now runs on a dedicated single thread,
+  satisfying the SDK requirement ("Methods MUST be called on a single
+  thread") and preventing a status query that outlives its timeout from
+  overlapping the next print.
+- **New API `getPrinterStatus()`**: queries the hardware status of the
+  connected printer, returning a normalized `PrinterHardwareStatus` (error
+  state, detected media size, and the exact QL label size detected — pass it
+  as `paperType` to avoid the "wrong roll type" error).
+- **New API `cancelPrinting()`**: asks the SDK to abort any in-flight print,
+  releasing the channel so a stale print cannot block new communication.
+- **New `BrotherPrintPresets`**: ready-to-use `PrintOptions` presets for the
+  configurations validated on hardware (QL-820NWB die-cut 29×90 mm, QL-820NWB
+  roll 62 mm, RJ-2050 roll 58 mm), with `forMedia()` to match the cassette
+  actually loaded in the printer.
+- **iOS**: `detach(from:)` now closes the printer channel so the printer is
+  not left "busy" after a hot restart, and `disconnect()` no longer touches
+  the SDK driver directly.
+- **Example**: reorganized into a clean folder structure (screens, services,
+  labels) with a `PrinterController` owning the plugin logic; the detected
+  label size is cached per connection so printing does not run a status query
+  before every job.
+
 ## 0.1.1
 
 - **Faster discovery**: `discoverPrinters()` now streams results through a new

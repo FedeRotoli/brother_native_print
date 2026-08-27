@@ -38,11 +38,22 @@ abstract class BrotherNativePrintPlatform extends PlatformInterface {
   Future<void> disconnect() =>
       throw UnimplementedError('disconnect() not implemented.');
 
+  /// Asks the SDK to abort any in-flight print, releasing the channel for a
+  /// new attempt. Safe to call while a print is stuck.
+  Future<void> cancelPrinting() =>
+      throw UnimplementedError('cancelPrinting() not implemented.');
+
   Future<PrintResult> printImage(Uint8List imageBytes, PrintOptions options) =>
       throw UnimplementedError('printImage() not implemented.');
 
   Future<PrintResult> printPdf(Uint8List pdfBytes, PrintOptions options) =>
       throw UnimplementedError('printPdf() not implemented.');
+
+  /// Queries the hardware status of the currently connected printer.
+  ///
+  /// Returns `null` when no printer is connected.
+  Future<PrinterHardwareStatus?> getPrinterStatus() =>
+      throw UnimplementedError('getPrinterStatus() not implemented.');
 
   Stream<PrinterStatus> get statusStream =>
       throw UnimplementedError('statusStream not implemented.');

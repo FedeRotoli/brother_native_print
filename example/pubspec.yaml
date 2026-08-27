@@ -30,6 +30,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   # Generates the in-memory test PDF for the print demo.
   pdf: ^3.11.3
+  # Code 128 barcode on the mock traceability label (also used by pdf).
+  barcode: ^2.2.9
   # Runtime Bluetooth/Location permission requests (Android 12+).
   permission_handler: ^12.0.1
 

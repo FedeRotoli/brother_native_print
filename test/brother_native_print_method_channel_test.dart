@@ -1,12 +1,13 @@
-import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
 import 'package:brother_native_print/brother_native_print.dart';
 import 'package:brother_native_print/brother_native_print_method_channel.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  MethodChannelBrotherNativePrint platform = MethodChannelBrotherNativePrint();
+  final MethodChannelBrotherNativePrint platform =
+      MethodChannelBrotherNativePrint();
   const MethodChannel channel = MethodChannel('brother_native_print/methods');
   const EventChannel discoveryChannel = EventChannel(
     'brother_native_print/discovery',
@@ -19,6 +20,15 @@ void main() {
             case 'printImage':
             case 'printPdf':
               return {'success': true};
+            case 'getStatus':
+              return {
+                'isOk': true,
+                'errorCode': null,
+                'mediaWidthMm': 62,
+                'mediaHeightMm': 0,
+                'isHeightInfinite': true,
+                'detectedPaperType': 'RollW62',
+              };
             default:
               return null;
           }
@@ -83,5 +93,36 @@ void main() {
       const PrintOptions(),
     );
     expect(result.success, isTrue);
+  });
+
+  test('getPrinterStatus maps the native map', () async {
+    final status = await platform.getPrinterStatus();
+    expect(status, isNotNull);
+    expect(status!.isOk, isTrue);
+    expect(status.errorCode, isNull);
+    expect(status.mediaWidthMm, 62);
+    expect(status.mediaHeightMm, 0);
+    expect(status.isHeightInfinite, isTrue);
+    expect(status.detectedPaperType, 'RollW62');
+  });
+
+  test('getPrinterStatus returns null when disconnected', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          channel,
+          (MethodCall methodCall) async => null,
+        );
+    expect(await platform.getPrinterStatus(), isNull);
+  });
+
+  test('cancelPrinting invokes the method channel', () async {
+    String? invoked;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+          invoked = methodCall.method;
+          return null;
+        });
+    await platform.cancelPrinting();
+    expect(invoked, 'cancelPrinting');
   });
 }
