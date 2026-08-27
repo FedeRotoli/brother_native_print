@@ -13,6 +13,17 @@ private struct PluginFailure: Error {
   let message: String
 }
 
+/// Display data of the logical connection stored by `connect`, so
+/// `getConnectedPrinter()` can rebuild a `BrotherPrinter` map without needing
+/// the discovery channel that produced it.
+private struct ConnectedPrinter {
+  let modelName: String
+  let connectionType: String
+  let ip: String?
+  let mac: String?
+  let serial: String?
+}
+
 public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
   private var eventSink: FlutterEventSink?
 
@@ -22,6 +33,9 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   // printer is never left "busy" (Brother pattern: open -> operation -> close).
   private var connectedChannel: BRLMChannel?
   private var currentModel: BRLMPrinterModel?
+  // Display data of the logical connection, so getConnectedPrinter() can
+  // return it even after navigating away (kept until disconnect/detach).
+  private var connectedPrinter: ConnectedPrinter?
   // Driver of the operation currently in flight (so cancelPrinting can reach
   // it from another thread while a print is stuck).
   private var currentDriver: BRLMPrinterDriver?
@@ -70,6 +84,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       currentDriver = nil
       connectedChannel = nil
       currentModel = nil
+      connectedPrinter = nil
       discoveredChannels.removeAll()
     }
     cancelDiscovery()
@@ -120,6 +135,8 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     case "disconnect":
       disconnect()
       return nil
+    case "getConnectedPrinter":
+      return getConnectedPrinter()
     case "printImage":
       return try printImage(call)
     case "printPdf":
@@ -320,9 +337,34 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     synchronized {
       connectedChannel = channel
       currentModel = model
+      connectedPrinter = ConnectedPrinter(
+        modelName: modelName,
+        connectionType: connectionType,
+        ip: ip,
+        mac: mac,
+        serial: serial
+      )
     }
     emitState("connected")
     return true
+  }
+
+  /// Returns the stored logical connection as a `BrotherPrinter`-compatible
+  /// map, or nil when no printer is connected.
+  ///
+  /// The connection is kept until `disconnect` or plugin detach, so this
+  /// reports the printer even after the caller navigates to another screen —
+  /// useful to print again without re-running discovery (a connected printer
+  /// without a proper disconnect is often still "busy" and not discovered).
+  private func getConnectedPrinter() -> [String: Any?]? {
+    guard let printer = synchronized({ connectedPrinter }) else { return nil }
+    return [
+      "model": printer.modelName,
+      "connectionType": printer.connectionType,
+      "ipAddress": printer.ip,
+      "macAddress": printer.mac,
+      "serialNumber": printer.serial ?? "",
+    ]
   }
 
   private func resolveChannel(
@@ -395,6 +437,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       currentDriver?.cancelPrinting()
       connectedChannel = nil
       currentModel = nil
+      connectedPrinter = nil
     }
     emitState("disconnected")
   }
@@ -736,7 +779,10 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
 
   public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     eventSink = events
-    emitState(currentDriver != nil ? "connected" : "disconnected")
+    // Report the stored logical connection, not the transient in-flight
+    // driver: subscribing later (e.g. after navigating to another screen)
+    // must still report "connected" while the printer is connected.
+    emitState(synchronized { connectedPrinter != nil } ? "connected" : "disconnected")
     return nil
   }
 

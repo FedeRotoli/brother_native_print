@@ -42,6 +42,14 @@ class MockBrotherNativePrintPlatform
   Future<void> disconnect() => Future.value();
 
   @override
+  Future<BrotherPrinter?> getConnectedPrinter() async => const BrotherPrinter(
+    model: 'QL-820NWB',
+    connectionType: BrotherConnectionType.bluetooth,
+    macAddress: '11:22:33:44:55:66',
+    serialNumber: 'SN456',
+  );
+
+  @override
   Future<void> cancelPrinting() => Future.value();
 
   @override
@@ -109,6 +117,19 @@ void main() {
     expect(status!.isOk, isTrue);
     expect(status.mediaWidthMm, 62);
     expect(status.isHeightInfinite, isTrue);
+  });
+
+  test('getConnectedPrinter returns the stored connection', () async {
+    final BrotherNativePrint brotherNativePrintPlugin = BrotherNativePrint();
+    final MockBrotherNativePrintPlatform fakePlatform =
+        MockBrotherNativePrintPlatform();
+    BrotherNativePrintPlatform.instance = fakePlatform;
+
+    final printer = await brotherNativePrintPlugin.getConnectedPrinter();
+    expect(printer, isNotNull);
+    expect(printer!.model, 'QL-820NWB');
+    expect(printer.connectionType, BrotherConnectionType.bluetooth);
+    expect(printer.serialNumber, 'SN456');
   });
 
   test('PrinterHardwareStatus.fromMap', () {

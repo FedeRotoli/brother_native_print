@@ -29,6 +29,13 @@ void main() {
                 'isHeightInfinite': true,
                 'detectedPaperType': 'RollW62',
               };
+            case 'getConnectedPrinter':
+              return {
+                'model': 'QL-820NWB',
+                'connectionType': 'bluetooth',
+                'macAddress': '11:22:33:44:55:66',
+                'serialNumber': 'SN456',
+              };
             default:
               return null;
           }
@@ -114,6 +121,27 @@ void main() {
         );
     expect(await platform.getPrinterStatus(), isNull);
   });
+
+  test('getConnectedPrinter maps the native map', () async {
+    final printer = await platform.getConnectedPrinter();
+    expect(printer, isNotNull);
+    expect(printer!.model, 'QL-820NWB');
+    expect(printer.connectionType, BrotherConnectionType.bluetooth);
+    expect(printer.macAddress, '11:22:33:44:55:66');
+    expect(printer.serialNumber, 'SN456');
+  });
+
+  test(
+    'getConnectedPrinter returns null when no printer is connected',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            channel,
+            (MethodCall methodCall) async => null,
+          );
+      expect(await platform.getConnectedPrinter(), isNull);
+    },
+  );
 
   test('cancelPrinting invokes the method channel', () async {
     String? invoked;

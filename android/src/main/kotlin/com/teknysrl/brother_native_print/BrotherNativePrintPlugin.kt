@@ -96,6 +96,8 @@ class BrotherNativePrintPlugin :
 
     private data class ConnectedPrinter(
         val model: PrinterModel,
+        /** Original model name string passed by Dart (e.g. "RJ-2050"). */
+        val modelName: String,
         val connectionType: String,
         val ip: String?,
         val mac: String?,
@@ -135,6 +137,9 @@ class BrotherNativePrintPlugin :
                     result.error(failureCode(e), e.message, null)
                 }
             }
+            // Reads the stored logical connection: non-blocking, no SDK
+            // driver involved, so it is served on the calling thread.
+            "getConnectedPrinter" -> result.success(getConnectedPrinter())
             "cancelPrinting" -> scope.launch {
                 try {
                     cancelPrinting()
@@ -387,7 +392,7 @@ class BrotherNativePrintPlugin :
         val mac = args["macAddress"] as? String
         val serial = args["serialNumber"] as? String
 
-        val printer = ConnectedPrinter(model, connectionType, ip, mac, serial)
+        val printer = ConnectedPrinter(model, modelName, connectionType, ip, mac, serial)
         // Reachability probe: open and immediately close a channel.
         val probe = openDriver(printer)
         runCatching { probe.closeChannel() }
@@ -398,6 +403,26 @@ class BrotherNativePrintPlugin :
         }
         emitState("connected")
         return true
+    }
+
+    /**
+     * Returns the stored logical connection as a [BrotherPrinter]-compatible
+     * map, or null when no printer is connected.
+     *
+     * The connection is kept until [disconnect] or plugin detach, so this
+     * reports the printer even after the caller navigates to another screen —
+     * useful to print again without re-running discovery (a connected printer
+     * without a proper disconnect is often still "busy" and not discovered).
+     */
+    private fun getConnectedPrinter(): Map<String, Any?>? {
+        val printer = synchronized(this) { connectedPrinter } ?: return null
+        return mapOf(
+            "model" to printer.modelName,
+            "connectionType" to printer.connectionType,
+            "ipAddress" to printer.ip,
+            "macAddress" to printer.mac,
+            "serialNumber" to (printer.serial ?: ""),
+        )
     }
 
     private fun resolveChannel(
@@ -745,7 +770,12 @@ class BrotherNativePrintPlugin :
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
         eventSink = events
-        emitState(if (currentDriver != null) "connected" else "disconnected")
+        // Report the stored logical connection, not the transient in-flight
+        // driver: subscribing later (e.g. after navigating to another screen)
+        // must still report "connected" while the printer is connected.
+        emitState(
+            if (synchronized(this) { connectedPrinter != null }) "connected" else "disconnected"
+        )
     }
 
     override fun onCancel(arguments: Any?) {

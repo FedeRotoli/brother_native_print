@@ -71,6 +71,17 @@ class BrotherNativePrint {
   /// Closes the connection with the currently connected printer, if any.
   Future<void> disconnect() => BrotherNativePrintPlatform.instance.disconnect();
 
+  /// Returns the printer currently connected, or `null` when none.
+  ///
+  /// The connection established by [connect] is kept until [disconnect] is
+  /// called (or the plugin is detached), even if the caller navigates to
+  /// another screen. Use this to recover the connection data (model, IP/MAC
+  /// address, serial number) on any screen and print again without re-running
+  /// discovery: a printer that was connected without a proper disconnect is
+  /// often still "busy" and no longer listed by the discovery.
+  Future<BrotherPrinter?> getConnectedPrinter() =>
+      BrotherNativePrintPlatform.instance.getConnectedPrinter();
+
   /// Asks the SDK to abort any in-flight print operation.
   ///
   /// Useful when a print appears stuck (e.g. the SDK is still waiting for the

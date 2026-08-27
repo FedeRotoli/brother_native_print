@@ -4,6 +4,14 @@ include: package:flutter_lints/flutter.yaml
 # https://dart.dev/guides/language/analysis-options
 
 analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
   language:
     # Strict mode catches type errors that would otherwise surface at runtime.
     strict-casts: true

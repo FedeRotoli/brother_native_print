@@ -1,3 +1,19 @@
+## 0.3.0
+
+- **New API `getConnectedPrinter()`**: returns the printer currently connected
+  (model, connection type, IP/MAC address, serial number) or `null` when none.
+  The logical connection is kept until `disconnect()` (or plugin detach), so
+  the app can recover it on any screen and print again without re-running
+  discovery — useful because a printer connected without a proper disconnect
+  is often still "busy" and no longer listed by the discovery.
+- **Status stream now reports the stored connection**: subscribing to
+  `statusStream` after the connection was established (e.g. after navigating
+  to another screen) previously reported `disconnected` because it inspected
+  the transient in-flight driver instead of the stored logical connection.
+- **Example**: `PrinterController` restores the connection from
+  `getConnectedPrinter()` when the screen is (re)created, so returning to the
+  screen after connecting elsewhere keeps the printer selected and ready.
+
 ## 0.2.0
 
 - **Robust connection management**: the native side now follows the Brother

@@ -57,6 +57,30 @@ class PrinterController extends ChangeNotifier {
       _state = status.state;
       _appendLog('Status: ${status.state.name}');
     });
+    _restoreConnection();
+  }
+
+  /// Recovers the connection stored by the plugin when this controller is
+  /// (re)created on a new screen.
+  ///
+  /// A printer connected without a proper disconnect is often still "busy"
+  /// and no longer listed by the discovery, so instead of asking the user to
+  /// find it again the controller restores the selected printer from
+  /// [BrotherNativePrint.getConnectedPrinter], making it immediately ready to
+  /// print (the plugin reports the stored connection on the status stream).
+  Future<void> _restoreConnection() async {
+    try {
+      final printer = await _plugin.getConnectedPrinter();
+      if (printer == null || _disposed) return;
+      _selected = printer;
+      _state = PrinterConnectionState.connected;
+      _appendLog(
+        'Restored connection: '
+        '${printer.serialNumber.isNotEmpty ? printer.serialNumber : printer.model}',
+      );
+    } on PlatformException catch (e) {
+      _appendLog('Restore connection failed: ${e.code} ${e.message}');
+    }
   }
 
   @override

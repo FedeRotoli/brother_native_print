@@ -57,6 +57,15 @@ class MethodChannelBrotherNativePrint extends BrotherNativePrintPlatform {
   Future<void> disconnect() => methodChannel.invokeMethod('disconnect');
 
   @override
+  Future<BrotherPrinter?> getConnectedPrinter() async {
+    final result = await methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+      'getConnectedPrinter',
+    );
+    if (result == null) return null;
+    return BrotherPrinter.fromMap(result);
+  }
+
+  @override
   Future<void> cancelPrinting() => methodChannel.invokeMethod('cancelPrinting');
 
   @override

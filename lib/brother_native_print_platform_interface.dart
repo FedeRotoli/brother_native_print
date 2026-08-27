@@ -38,6 +38,16 @@ abstract class BrotherNativePrintPlatform extends PlatformInterface {
   Future<void> disconnect() =>
       throw UnimplementedError('disconnect() not implemented.');
 
+  /// Returns the printer currently connected, or `null` when none.
+  ///
+  /// The logical connection stored by [connect] is kept until [disconnect] is
+  /// called (or the plugin is detached), even if the caller navigates to
+  /// another screen. This is the data needed to print again without re-running
+  /// discovery — useful because a printer that was connected without a proper
+  /// disconnect is often "busy" and no longer listed by the discovery.
+  Future<BrotherPrinter?> getConnectedPrinter() =>
+      throw UnimplementedError('getConnectedPrinter() not implemented.');
+
   /// Asks the SDK to abort any in-flight print, releasing the channel for a
   /// new attempt. Safe to call while a print is stuck.
   Future<void> cancelPrinting() =>

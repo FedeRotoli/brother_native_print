@@ -298,6 +298,30 @@ if (status != null) {
 the media the printer actually detected (`mediaWidthMm`, `mediaHeightMm`,
 `isHeightInfinite`), which is useful to spot a label size mismatch.
 
+### Recovering the current connection
+
+To check whether a printer is already connected and recover its data (model,
+IP/MAC address, serial number) on any screen — e.g. after navigating within
+the app or returning after the connection was established — use
+`getConnectedPrinter()`:
+
+```dart
+final BrotherPrinter? printer = await plugin.getConnectedPrinter();
+if (printer != null) {
+  // Already connected: print again without re-running discovery.
+  await plugin.printImage(imageBytes);
+} else {
+  // Nothing connected: run discovery and connect() first.
+}
+```
+
+The logical connection is kept until `disconnect()` (or the plugin is
+detached), so this works even when the printer is not listed by a new
+discovery — a printer connected without a proper disconnect is often still
+"busy" and no longer discoverable. `statusStream` also reports the stored
+connection as soon as you subscribe, so a screen created after the connection
+was established sees `connected` immediately.
+
 ## Connection model
 
 The native plugin follows the Brother-recommended pattern **`open channel →
