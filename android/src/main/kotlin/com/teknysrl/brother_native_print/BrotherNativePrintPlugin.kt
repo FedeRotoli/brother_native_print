@@ -5,6 +5,8 @@ import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
 import com.brother.sdk.lmprinter.BLESearchOption
@@ -37,7 +39,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import java.io.File
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Flutter plugin for Brother RJ-2050 and QL-820NWB printers.
@@ -250,6 +259,16 @@ class BrotherNativePrintPlugin :
                     runCatching { searchNetworkStreaming(ctx, durationSec, generation) }
                         .onFailure { Log.w(TAG, "Wi-Fi search failed: ${it.message}") }
                 }
+                // Unicast subnet sweep fallback: the SDK network search uses a
+                // broadcast that some routers/printer firmware ignore, so even
+                // with the phone and the printer on the same healthy network it
+                // can report 0 printers. Probing every host on the phone's
+                // subnet directly (unicast SNMP, same OID the SDK uses) finds
+                // those printers too. Runs in parallel with the SDK search.
+                jobs += launch {
+                    runCatching { searchNetworkUnicastSweep(ctx, timeoutMs, generation) }
+                        .onFailure { Log.w(TAG, "Unicast sweep failed: ${it.message}") }
+                }
             }
             if ("bluetooth" in connectionTypes) {
                 val problem = ensureBluetoothPermissions()
@@ -285,6 +304,152 @@ class BrotherNativePrintPlugin :
         if (error != null) {
             throw FlutterFailure("discoverFailed", "Wi-Fi search failed: ${error.code}")
         }
+    }
+
+    /**
+     * Fallback Wi-Fi discovery: probes every host on the phone's subnet with a
+     * unicast SNMP GET asking for the Brother model OID.
+     *
+     * The SDK network search relies on a broadcast that some routers filter and
+     * that some printer firmware ignores (responding only to unicast SNMP), so
+     * it can return 0 printers even on a healthy network. This sweep talks to
+     * each host directly, so it finds those printers too.
+     */
+    private fun searchNetworkUnicastSweep(ctx: Context, timeoutMs: Int, generation: Long) {
+        val info = wifiSubnetInfo()
+        if (info == null) {
+            Log.w(TAG, "Unicast sweep skipped: phone is not on a Wi-Fi network")
+            return
+        }
+        val (ownIp, prefix) = info
+        val hosts = buildHostList(ownIp, prefix)
+            ?: run {
+                Log.w(TAG, "Unicast sweep skipped: cannot compute the subnet for $ownIp/$prefix")
+                return
+            }
+        if (hosts.isEmpty()) {
+            Log.w(TAG, "Unicast sweep skipped: empty subnet for $ownIp/$prefix")
+            return
+        }
+        Log.i(TAG, "Unicast sweep: scanning ${hosts.size} hosts on $ownIp/$prefix")
+
+        val found = AtomicInteger(0)
+        val latch = CountDownLatch(hosts.size)
+        val executor = Executors.newFixedThreadPool(32) { r ->
+            Thread(r, "brother-sweep").apply { isDaemon = true }
+        }
+        try {
+            for (host in hosts) {
+                executor.execute {
+                    try {
+                        if (generation != discoveryGeneration) return@execute
+                        // The SDK reads the model from hrDeviceDescr (Host
+                        // Resources), so probe it first; hosts that respond
+                        // without a model value fall back to sysDescr and the
+                        // Brother private MIB.
+                        val first = SnmpProbe.probe(host, SnmpProbe.HR_DEVICE_DESCR_OID, 500)
+                        if (generation != discoveryGeneration) return@execute
+                        if (!first.responded) return@execute
+                        var clean = normalizeModel(first.value)
+                        if (clean == null) {
+                            val desc = SnmpProbe.probe(host, SnmpProbe.SYSDESCR_OID, 300)
+                            clean = normalizeModel(desc.value)
+                        }
+                        if (clean == null) {
+                            val privateModel = SnmpProbe.probe(host, SnmpProbe.MODEL_OID, 300)
+                            clean = normalizeModel(privateModel.value)
+                        }
+                        if (clean == null) return@execute
+                        val channel = Channel.newWifiChannel(host).apply {
+                            extraInfo[Channel.ExtraInfoKey.ModelName] = clean
+                            extraInfo[Channel.ExtraInfoKey.IpAddress] = host
+                        }
+                        emitChannel(channel, generation)
+                        found.incrementAndGet()
+                        Log.i(TAG, "Unicast sweep found $clean at $host")
+                    } finally {
+                        latch.countDown()
+                    }
+                }
+            }
+            // Hard cap so a slow/unusual network cannot stall the discovery.
+            latch.await(20, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Log.i(TAG, "Unicast sweep finished: ${found.get()} printer(s) found")
+    }
+
+    /**
+     * Normalizes an SNMP model string and returns null when the device is not
+     * a Brother printer.
+     *
+     * connect() only accepts "QL-820NWB"/"RJ-2050", so those exact tokens are
+     * extracted (from "Brother QL-820NWB", "QL_820NWB", "QL-820NWB Label
+     * Printer"...). Any other model is kept only when the device self-identifies
+     * as Brother ("Brother ..." in the description): non-Brother printers that
+     * answer SNMP (e.g. HP, Epson) are filtered out.
+     */
+    private fun normalizeModel(raw: String?): String? {
+        val trimmed = raw?.trim()?.removePrefix("Brother ")?.trim()
+        if (trimmed.isNullOrEmpty()) return null
+        val upper = trimmed.uppercase().replace('_', '-')
+        if (upper.contains("QL-820NWB")) return "QL-820NWB"
+        if (upper.contains("RJ-2050")) return "RJ-2050"
+        return if (upper.contains("BROTHER")) trimmed else null
+    }
+
+    /** The phone's Wi-Fi address and prefix length, or null when not on Wi-Fi. */
+    private fun wifiSubnetInfo(): Pair<String, Int>? {
+        val ctx = context ?: return null
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return null
+        val network = cm.activeNetwork ?: return null
+        val capabilities = cm.getNetworkCapabilities(network) ?: return null
+        if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return null
+        val linkProperties = cm.getLinkProperties(network) ?: return null
+        for (address in linkProperties.linkAddresses) {
+            val inet = address.address ?: continue
+            if (inet is Inet4Address) {
+                return Pair(inet.hostAddress ?: continue, address.prefixLength)
+            }
+        }
+        return null
+    }
+
+    /**
+     * Lists the host addresses on the phone's subnet to probe.
+     *
+     * The scan is bounded to a /24 around the phone (254 hosts) even when the
+     * real prefix is larger, to keep the sweep fast on big/office networks.
+     */
+    private fun buildHostList(ownIp: String, prefix: Int): List<String>? {
+        val bytes = runCatching { InetAddress.getByName(ownIp).address }.getOrNull() ?: return null
+        if (bytes.size != 4) return null
+        val ipInt = ((bytes[0].toInt() and 0xFF) shl 24) or
+            ((bytes[1].toInt() and 0xFF) shl 16) or
+            ((bytes[2].toInt() and 0xFF) shl 8) or
+            (bytes[3].toInt() and 0xFF)
+        val effectivePrefix = prefix.coerceAtLeast(24)
+        val mask = -1 shl (32 - effectivePrefix)
+        val network = ipInt and mask
+        val broadcast = network or mask.inv()
+        val hosts = ArrayList<String>()
+        for (host in (network + 1) until broadcast) {
+            if (host == ipInt) continue
+            hosts.add(intToIp(host))
+        }
+        return hosts
+    }
+
+    private fun intToIp(value: Int): String = buildString {
+        append((value ushr 24) and 0xFF)
+        append('.')
+        append((value ushr 16) and 0xFF)
+        append('.')
+        append((value ushr 8) and 0xFF)
+        append('.')
+        append(value and 0xFF)
     }
 
     /** Blocking BLE search that streams every channel as it is found. */
@@ -798,5 +963,180 @@ class BrotherNativePrintPlugin :
     }
 
     private class FlutterFailure(val code: String, message: String) : Exception(message)
+}
+
+/**
+ * Minimal SNMPv1 client used by the unicast subnet sweep fallback.
+ *
+ * It only needs one operation: a single-varbind GET that returns an OCTET
+ * STRING (the value of a Brother MIB OID). The request is built by hand
+ * (BER/TLV) and the response is walked to extract the last OCTET STRING, which
+ * is the varbind value. Failures (timeout, non-SNMP host, malformed packet)
+ * return null.
+ */
+private object SnmpProbe {
+    /** Brother private MIB (enterprise 2435): printer model name. */
+    const val MODEL_OID = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"
+    /** Standard MIB-II sysDescr, often "Brother QL-820NWB...". */
+    const val SYSDESCR_OID = "1.3.6.1.2.1.1.1.0"
+    /** Host Resources hrDeviceDescr, also reports the device description. */
+    const val HR_DEVICE_DESCR_OID = "1.3.6.1.2.1.25.3.2.1.3.1"
+    private const val SNMP_PORT = 161
+    private const val COMMUNITY = "public"
+
+    /** Outcome of a probe: whether a UDP reply was received and its value. */
+    data class ProbeResult(val responded: Boolean, val value: String?)
+
+    /**
+     * Sends an SNMPv1 GET for [oid] to [host].
+     *
+     * [responded] is true when the host sent back a (parseable) SNMP packet,
+     * even if it carried no value (e.g. an error PDU for an unsupported OID);
+     * [value] is the OCTET STRING value when present, null otherwise.
+     */
+    fun probe(host: String, oid: String, timeoutMs: Int): ProbeResult {
+        return try {
+            val request = buildGetRequest(oid)
+            DatagramSocket().use { socket ->
+                socket.soTimeout = timeoutMs
+                val address = InetAddress.getByName(host)
+                socket.send(DatagramPacket(request, request.size, address, SNMP_PORT))
+                val buffer = ByteArray(2048)
+                val packet = DatagramPacket(buffer, buffer.size)
+                socket.receive(packet)
+                ProbeResult(true, parseResponse(packet.data, packet.length))
+            }
+        } catch (e: Exception) {
+            ProbeResult(false, null)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Encoding (SNMPv1 GET: version 0, community "public", GET PDU)
+    // ------------------------------------------------------------------
+
+    private fun buildGetRequest(oid: String): ByteArray {
+        val varbind = encodeSequence(encodeOid(oid) + encodeNull())
+        val varbindList = encodeSequence(varbind)
+        val pdu = encodeTlv(0xA0.toByte(), encodeInteger(1) + encodeInteger(0) + encodeInteger(0) + varbindList)
+        val message = encodeInteger(0) + encodeOctetString(COMMUNITY.toByteArray(Charsets.US_ASCII)) + pdu
+        return encodeSequence(message)
+    }
+
+    private fun encodeSequence(body: ByteArray): ByteArray = encodeTlv(0x30, body)
+
+    private fun encodeOctetString(bytes: ByteArray): ByteArray = encodeTlv(0x04, bytes)
+
+    private fun encodeNull(): ByteArray = byteArrayOf(0x05, 0x00)
+
+    private fun encodeInteger(value: Int): ByteArray {
+        var v = value
+        val tmp = ByteArray(4)
+        var i = tmp.size
+        do {
+            i--
+            tmp[i] = (v and 0xFF).toByte()
+            v = v shr 8
+        } while (v != 0 && v != -1 && i > 0)
+        val first = tmp[i].toInt() and 0xFF
+        var start = i
+        // Positive values whose top bit is set need a leading 0x00.
+        if (value >= 0 && (first and 0x80) != 0) {
+            start -= 1
+            tmp[start] = 0
+        }
+        return encodeTlv(0x02, tmp.copyOfRange(start, tmp.size))
+    }
+
+    private fun encodeOid(oid: String): ByteArray {
+        val parts = oid.split('.').mapNotNull { it.toIntOrNull() }
+        val body = ArrayList<Byte>()
+        body.addAll(encodeArc(40 * parts[0] + parts[1]).toList())
+        for (i in 2 until parts.size) {
+            body.addAll(encodeArc(parts[i]).toList())
+        }
+        return encodeTlv(0x06, body.toByteArray())
+    }
+
+    /** Encodes one OID arc in base-128 big-endian with the continuation bit. */
+    private fun encodeArc(value: Int): ByteArray {
+        val tmp = ByteArray(5)
+        var v = value
+        var i = tmp.size
+        do {
+            i--
+            tmp[i] = (v and 0x7F).toByte()
+            v = v ushr 7
+        } while (v > 0)
+        for (j in i until tmp.size - 1) {
+            tmp[j] = (tmp[j].toInt() or 0x80).toByte()
+        }
+        return tmp.copyOfRange(i, tmp.size)
+    }
+
+    private fun encodeTlv(tag: Byte, value: ByteArray): ByteArray =
+        byteArrayOf(tag) + encodeLength(value.size) + value
+
+    private fun encodeLength(length: Int): ByteArray {
+        if (length < 128) return byteArrayOf(length.toByte())
+        var l = length
+        val tmp = ByteArray(4)
+        var i = tmp.size
+        while (l > 0) {
+            i--
+            tmp[i] = (l and 0xFF).toByte()
+            l = l ushr 8
+        }
+        val count = tmp.size - i
+        val out = ByteArray(count + 1)
+        out[0] = (0x80 or count).toByte()
+        System.arraycopy(tmp, i, out, 1, count)
+        return out
+    }
+
+    // ------------------------------------------------------------------
+    // Decoding: walk the BER response and return the last OCTET STRING
+    // ------------------------------------------------------------------
+
+    private fun parseResponse(data: ByteArray, length: Int): String? {
+        val values = ArrayList<String>()
+        walkTlv(data, 0, length, values)
+        // The first OCTET STRING is always the community; a real response has a
+        // second one (the varbind value). An error PDU (unsupported OID) has
+        // only the community, so treat it as "no value".
+        if (values.size < 2) return null
+        val value = values.last()
+        return if (value == COMMUNITY) null else value
+    }
+
+    private fun walkTlv(data: ByteArray, offset: Int, length: Int, out: MutableList<String>) {
+        var pos = offset
+        val end = offset + length
+        while (pos < end) {
+            val tag = data[pos].toInt() and 0xFF
+            pos++
+            val (len, next) = readLength(data, pos)
+            pos = next
+            if (pos + len > data.size) return
+            when (tag) {
+                0x04 -> out.add(String(data, pos, len, Charsets.US_ASCII))
+                // 0x30 = SEQUENCE; 0xA0/0xA1/0xA2 = SNMP PDUs (the GetResponse
+                // is 0xA2): the varbind value lives inside them.
+                0x30, 0xA0, 0xA1, 0xA2 -> walkTlv(data, pos, len, out)
+            }
+            pos += len
+        }
+    }
+
+    private fun readLength(data: ByteArray, offset: Int): Pair<Int, Int> {
+        val first = data[offset].toInt() and 0xFF
+        if ((first and 0x80) == 0) return Pair(first, offset + 1)
+        val count = first and 0x7F
+        var length = 0
+        for (i in 0 until count) {
+            length = (length shl 8) or (data[offset + 1 + i].toInt() and 0xFF)
+        }
+        return Pair(length, offset + 1 + count)
+    }
 }
 

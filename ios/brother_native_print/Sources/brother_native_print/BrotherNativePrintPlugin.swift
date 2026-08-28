@@ -1,8 +1,9 @@
+import BRLMPrinterKit
 import CoreBluetooth
+import Darwin
 import Flutter
 import Foundation
 import ImageIO
-import BRLMPrinterKit
 
 // SDK class names verified against the BRLMPrinterKit.xcframework headers
 // (BT_Net variant, for RJ-2050 and QL-820NWB which require Bluetooth).
@@ -214,6 +215,17 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
           print("[BrotherNativePrint] Wi-Fi search failed: \(result.error.code.rawValue)")
         }
       }
+      // Unicast subnet sweep fallback: the SDK network search uses a broadcast
+      // that some routers/printer firmware ignore, so even with the phone and
+      // the printer on the same healthy network it can report 0 printers.
+      // Probing every host on the phone's subnet directly (unicast SNMP, same
+      // OID the SDK uses) finds those printers too. Runs in parallel.
+      group.enter()
+      discoveryQueue.async { [weak self] in
+        defer { group.leave() }
+        guard let self = self else { return }
+        self.searchNetworkUnicastSweep(generation: generation)
+      }
     }
 
     if connectionTypes.contains("bluetooth") {
@@ -278,6 +290,150 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     // full timeout.
     BRLMPrinterSearcher.cancelNetworkSearch()
     BRLMPrinterSearcher.cancelBLESearch()
+  }
+
+  /// Fallback Wi-Fi discovery: probes every host on the phone's subnet with a
+  /// unicast SNMP GET asking for the Brother model OID.
+  ///
+  /// The SDK network search relies on a broadcast that some routers filter and
+  /// that some printer firmware ignores (responding only to unicast SNMP), so
+  /// it can return 0 printers even on a healthy network. This sweep talks to
+  /// each host directly, so it finds those printers too.
+  private func searchNetworkUnicastSweep(generation: Int) {
+    guard let info = wifiSubnetInfo() else {
+      print("[BrotherNativePrint] Unicast sweep skipped: phone is not on a Wi-Fi network")
+      return
+    }
+    let hosts = buildHostList(ownIP: info.ip, netmask: info.netmask)
+    guard !hosts.isEmpty else {
+      print("[BrotherNativePrint] Unicast sweep skipped: empty subnet for \(info.ip)")
+      return
+    }
+    print("[BrotherNativePrint] Unicast sweep: scanning \(hosts.count) hosts on \(info.ip)")
+
+    var found = 0
+    let foundLock = NSLock()
+    let semaphore = DispatchSemaphore(value: 32)
+    let group = DispatchGroup()
+    let workQueue = DispatchQueue.global(qos: .userInitiated)
+
+    for host in hosts {
+      semaphore.wait()
+      group.enter()
+      workQueue.async { [weak self] in
+        defer {
+          semaphore.signal()
+          group.leave()
+        }
+        guard let self = self else { return }
+        guard generation == self.discoveryGeneration else { return }
+        // The SDK reads the model from hrDeviceDescr (Host Resources), so
+        // probe it first; hosts that respond without a model value fall back
+        // to sysDescr and the Brother private MIB.
+        let first = SnmpClient.probe(host: host, oid: SnmpClient.hrDeviceDescrOID, timeoutMs: 500)
+        guard generation == self.discoveryGeneration else { return }
+        guard first.responded else { return }
+        var clean = self.normalizeModel(first.value)
+        if clean == nil {
+          let desc = SnmpClient.probe(host: host, oid: SnmpClient.sysDescrOID, timeoutMs: 300)
+          clean = self.normalizeModel(desc.value)
+        }
+        if clean == nil {
+          let privateModel = SnmpClient.probe(host: host, oid: SnmpClient.modelOID, timeoutMs: 300)
+          clean = self.normalizeModel(privateModel.value)
+        }
+        guard let model = clean else { return }
+        let channel = BRLMChannel(wifiIPAddress: host)
+        channel.extraInfo?[BRLMChannelExtraInfoKeyModelName] = model as NSString
+        channel.extraInfo?[BRLMChannelExtraInfoKeyIpAddress] = host as NSString
+        self.emitChannel(channel, generation: generation)
+        foundLock.lock()
+        found += 1
+        foundLock.unlock()
+        print("[BrotherNativePrint] Unicast sweep found \(model) at \(host)")
+      }
+    }
+
+    // Hard cap so a slow/unusual network cannot stall the discovery.
+    let waitResult = group.wait(timeout: .now() + 20)
+    if waitResult == .timedOut {
+      print("[BrotherNativePrint] Unicast sweep timed out")
+    }
+    print("[BrotherNativePrint] Unicast sweep finished: \(found) printer(s) found")
+  }
+
+  /// Normalizes an SNMP model string and returns nil when the device is not a
+  /// Brother printer.
+  ///
+  /// connect() only accepts "QL-820NWB"/"RJ-2050", so those exact tokens are
+  /// extracted (from "Brother QL-820NWB", "QL_820NWB", "QL-820NWB Label
+  /// Printer"...). Any other model is kept only when the device self-identifies
+  /// as Brother ("Brother ..." in the description): non-Brother printers that
+  /// answer SNMP (e.g. HP, Epson) are filtered out.
+  private func normalizeModel(_ raw: String?) -> String? {
+    guard let trimmed = raw?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .replacingOccurrences(of: "^Brother ", with: "", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    let upper = trimmed.uppercased().replacingOccurrences(of: "_", with: "-")
+    if upper.contains("QL-820NWB") { return "QL-820NWB" }
+    if upper.contains("RJ-2050") { return "RJ-2050" }
+    return upper.contains("BROTHER") ? trimmed : nil
+  }
+
+  /// The phone's Wi-Fi IPv4 address and netmask ("en0"), or nil when not on Wi-Fi.
+  private func wifiSubnetInfo() -> (ip: String, netmask: String)? {
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+    defer { freeifaddrs(ifaddr) }
+    var pointer: UnsafeMutablePointer<ifaddrs>? = first
+    while let ifa = pointer {
+      defer { pointer = ifa.pointee.ifa_next }
+      guard let addr = ifa.pointee.ifa_addr, let netmask = ifa.pointee.ifa_netmask else {
+        continue
+      }
+      guard addr.pointee.sa_family == sa_family_t(AF_INET) else { continue }
+      let name = String(cString: ifa.pointee.ifa_name)
+      guard name == "en0" else { continue }
+      let addrLen = socklen_t(addr.pointee.sa_len)
+      var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+      var mask = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+      guard getnameinfo(addr, addrLen, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0,
+        getnameinfo(netmask, addrLen, &mask, socklen_t(mask.count), nil, 0, NI_NUMERICHOST) == 0
+      else {
+        continue
+      }
+      return (String(cString: host), String(cString: mask))
+    }
+    return nil
+  }
+
+  /// Lists the host addresses on the phone's subnet to probe.
+  ///
+  /// The scan is bounded to a /24 around the phone (254 hosts) even when the
+  /// real prefix is larger, to keep the sweep fast on big/office networks.
+  private func buildHostList(ownIP: String, netmask: String) -> [String] {
+    let ipParts = ownIP.split(separator: ".").compactMap { UInt32($0) }
+    let maskParts = netmask.split(separator: ".").compactMap { UInt32($0) }
+    guard ipParts.count == 4, maskParts.count == 4 else { return [] }
+    let ip = (ipParts[0] << 24) | (ipParts[1] << 16) | (ipParts[2] << 8) | ipParts[3]
+    let mask = (maskParts[0] << 24) | (maskParts[1] << 16) | (maskParts[2] << 8) | maskParts[3]
+    let effectiveMask = mask >= 0xFFFFFF00 ? mask : 0xFFFFFF00
+    let network = ip & effectiveMask
+    let broadcast = network | ~effectiveMask
+    var hosts: [String] = []
+    var host = network + 1
+    while host < broadcast {
+      if host != ip {
+        hosts.append(
+          "\((host >> 24) & 0xFF).\((host >> 16) & 0xFF).\((host >> 8) & 0xFF).\(host & 0xFF)"
+        )
+      }
+      host += 1
+    }
+    return hosts
   }
 
   private func ensureBluetoothAccess() throws {
@@ -821,6 +977,202 @@ private class DiscoveryStreamHandler: NSObject, FlutterStreamHandler {
   func onCancel(withArguments arguments: Any?) -> FlutterError? {
     plugin?.cancelDiscovery()
     return nil
+  }
+}
+
+/// Minimal SNMPv1 client used by the unicast subnet sweep fallback.
+///
+/// It only needs one operation: a single-varbind GET that returns an OCTET
+/// STRING (the value of a Brother MIB OID). The request is built by hand
+/// (BER/TLV) and the response is walked to extract the last OCTET STRING.
+/// Failures (timeout, non-SNMP host, malformed packet) return nil.
+private struct SnmpClient {
+  /// Brother private MIB (enterprise 2435): printer model name.
+  static let modelOID = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"
+  /// Standard MIB-II sysDescr, often "Brother QL-820NWB...".
+  static let sysDescrOID = "1.3.6.1.2.1.1.1.0"
+  /// Host Resources hrDeviceDescr, also reports the device description.
+  static let hrDeviceDescrOID = "1.3.6.1.2.1.25.3.2.1.3.1"
+  private static let port: UInt16 = 161
+  private static let community = "public"
+
+  /// Outcome of a probe: whether a UDP reply was received and its value.
+  struct ProbeResult {
+    let responded: Bool
+    let value: String?
+  }
+
+  /// Sends an SNMPv1 GET for `oid` to `host`.
+  ///
+  /// `responded` is true when the host sent back a (parseable) SNMP packet,
+  /// even if it carried no value (e.g. an error PDU for an unsupported OID);
+  /// `value` is the OCTET STRING value when present, nil otherwise.
+  static func probe(host: String, oid: String, timeoutMs: Int) -> ProbeResult {
+    guard let dest = ipv4Destination(host) else { return ProbeResult(responded: false, value: nil) }
+    let request = buildGetRequest(oid: oid)
+    let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    guard fd >= 0 else { return ProbeResult(responded: false, value: nil) }
+    defer { close(fd) }
+
+    // Receive timeout so a non-responding host returns quickly.
+    var tv = timeval(tv_sec: timeoutMs / 1000, tv_usec: Int32((timeoutMs % 1000) * 1000))
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+    let sent = request.withUnsafeBytes { (buf: UnsafeRawBufferPointer) -> Int in
+      var destMutable = dest
+      return withUnsafePointer(to: &destMutable) { destPtr in
+        destPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sock in
+          sendto(fd, buf.baseAddress, buf.count, 0, sock, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+      }
+    }
+    guard sent == request.count else { return ProbeResult(responded: false, value: nil) }
+
+    var buffer = [UInt8](repeating: 0, count: 2048)
+    let received = buffer.withUnsafeMutableBytes { (buf: UnsafeMutableRawBufferPointer) -> Int in
+      recvfrom(fd, buf.baseAddress, buf.count, 0, nil, nil)
+    }
+    guard received > 0 else { return ProbeResult(responded: false, value: nil) }
+    return ProbeResult(responded: true, value: parseResponse(Array(buffer[0..<received])))
+  }
+
+  // ------------------------------------------------------------------
+  // Encoding (SNMPv1 GET: version 0, community "public", GET PDU)
+  // ------------------------------------------------------------------
+
+  private static func ipv4Destination(_ host: String) -> sockaddr_in? {
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = in_port_t(port).bigEndian
+    let result = host.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
+    guard result == 1 else { return nil }
+    return addr
+  }
+
+  private static func buildGetRequest(oid: String) -> [UInt8] {
+    var message: [UInt8] = []
+    message.append(contentsOf: encodeInteger(0)) // version
+    message.append(contentsOf: encodeOctetString(Array(community.utf8))) // community
+    var pdu: [UInt8] = []
+    pdu.append(contentsOf: encodeInteger(1)) // request-id
+    pdu.append(contentsOf: encodeInteger(0)) // error-status
+    pdu.append(contentsOf: encodeInteger(0)) // error-index
+    pdu.append(contentsOf: encodeSequence(encodeSequence(encodeOid(oid) + encodeNull())))
+    message.append(contentsOf: encodeTlv(0xA0, pdu)) // GET PDU
+    return encodeSequence(message)
+  }
+
+  private static func encodeTlv(_ tag: UInt8, _ value: [UInt8]) -> [UInt8] {
+    var out = [tag]
+    out.append(contentsOf: encodeLength(value.count))
+    out.append(contentsOf: value)
+    return out
+  }
+
+  private static func encodeLength(_ length: Int) -> [UInt8] {
+    if length < 128 { return [UInt8(length)] }
+    var tmp: [UInt8] = []
+    var l = length
+    while l > 0 {
+      tmp.insert(UInt8(l & 0xFF), at: 0)
+      l >>= 8
+    }
+    return [UInt8(0x80 | tmp.count)] + tmp
+  }
+
+  private static func encodeSequence(_ value: [UInt8]) -> [UInt8] { encodeTlv(0x30, value) }
+  private static func encodeOctetString(_ value: [UInt8]) -> [UInt8] { encodeTlv(0x04, value) }
+  private static func encodeNull() -> [UInt8] { [0x05, 0x00] }
+
+  private static func encodeInteger(_ value: Int) -> [UInt8] {
+    var tmp: [UInt8] = []
+    var v = value
+    repeat {
+      tmp.insert(UInt8(truncatingIfNeeded: v & 0xFF), at: 0)
+      v >>= 8
+    } while v != 0 && v != -1 && tmp.count < 4
+    let first = tmp.first ?? 0
+    if value >= 0 && (first & 0x80) != 0 {
+      tmp.insert(0, at: 0)
+    }
+    return encodeTlv(0x02, tmp)
+  }
+
+  private static func encodeOid(_ oid: String) -> [UInt8] {
+    let parts = oid.split(separator: ".").compactMap { Int($0) }
+    var body: [UInt8] = []
+    body.append(contentsOf: encodeArc(40 * parts[0] + parts[1]))
+    for i in 2..<parts.count {
+      body.append(contentsOf: encodeArc(parts[i]))
+    }
+    return encodeTlv(0x06, body)
+  }
+
+  /// Encodes one OID arc in base-128 big-endian with the continuation bit.
+  private static func encodeArc(_ value: Int) -> [UInt8] {
+    var tmp: [UInt8] = []
+    var v = value
+    repeat {
+      tmp.insert(UInt8(v & 0x7F), at: 0)
+      v >>= 7
+    } while v > 0
+    if tmp.count > 1 {
+      for i in 0..<(tmp.count - 1) {
+        tmp[i] |= 0x80
+      }
+    }
+    return tmp
+  }
+
+  // ------------------------------------------------------------------
+  // Decoding: walk the BER response and return the last OCTET STRING
+  // ------------------------------------------------------------------
+
+  private static func parseResponse(_ data: [UInt8]) -> String? {
+    var values: [String] = []
+    walkTlv(data, offset: 0, length: data.count, out: &values)
+    // The first OCTET STRING is always the community; a real response has a
+    // second one (the varbind value). An error PDU (unsupported OID) has only
+    // the community, so treat it as "no value".
+    guard values.count >= 2 else { return nil }
+    let value = values.last ?? ""
+    return value == community ? nil : value
+  }
+
+  private static func walkTlv(_ data: [UInt8], offset: Int, length: Int, out: inout [String]) {
+    var pos = offset
+    let end = offset + length
+    while pos < end && pos < data.count {
+      let tag = data[pos]
+      pos += 1
+      guard let (len, next) = readLength(data, offset: pos) else { return }
+      pos = next
+      guard pos + len <= data.count else { return }
+      switch tag {
+      case 0x04:
+        out.append(String(decoding: data[pos..<(pos + len)], as: UTF8.self))
+      // 0x30 = SEQUENCE; 0xA0/0xA1/0xA2 = SNMP PDUs (the GetResponse is
+      // 0xA2): the varbind value lives inside them.
+      case 0x30, 0xA0, 0xA1, 0xA2:
+        walkTlv(data, offset: pos, length: len, out: &out)
+      default:
+        break
+      }
+      pos += len
+    }
+  }
+
+  private static func readLength(_ data: [UInt8], offset: Int) -> (Int, Int)? {
+    guard offset < data.count else { return nil }
+    let first = data[offset]
+    if first & 0x80 == 0 { return (Int(first), offset + 1) }
+    let count = Int(first & 0x7F)
+    guard offset + 1 + count <= data.count else { return nil }
+    var length = 0
+    for i in 0..<count {
+      length = (length << 8) | Int(data[offset + 1 + i])
+    }
+    return (length, offset + 1 + count)
   }
 }
 

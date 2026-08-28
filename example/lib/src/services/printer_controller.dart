@@ -101,15 +101,28 @@ class PrinterController extends ChangeNotifier {
   // Discovery
   // ---------------------------------------------------------------------
 
-  /// Requests the runtime permissions and starts the streaming discovery.
-  Future<void> discover() async {
-    // Permissions are requested by the host app: the plugin fails with a
-    // clear error if they are missing when the Bluetooth discovery runs.
-    await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.locationWhenInUse,
-    ].request();
+  /// Starts the streaming discovery for the requested [connectionTypes].
+  ///
+  /// Bluetooth (and USB, on Android) require the host app to grant the
+  /// runtime permissions: they are requested here before the scan starts. The
+  /// search runs in the background (the UI is not marked busy) so the screen
+  /// stays responsive while the scan is in progress.
+  Future<void> discover({
+    Set<BrotherConnectionType> connectionTypes = const {
+      BrotherConnectionType.wifi,
+      BrotherConnectionType.bluetooth,
+      BrotherConnectionType.usb,
+    },
+  }) async {
+    // Bluetooth needs runtime permissions on Android 12+; the plugin reports
+    // a clear error if they are missing when the scan runs.
+    if (connectionTypes.contains(BrotherConnectionType.bluetooth)) {
+      await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+    }
     // Stop any previous search before starting a new one.
     await _discoverySubscription?.cancel();
     _discoverySubscription = null;
@@ -118,27 +131,29 @@ class PrinterController extends ChangeNotifier {
     notifyListeners();
 
     // Streaming discovery: already-paired Bluetooth printers arrive first,
-    // then Wi-Fi/BLE results as the searches complete. The search runs in the
-    // background (no _busy), so the Bluetooth printer can be paired right
-    // away while the other channels are still searching.
-    _discoverySubscription = _plugin.discoverPrintersStream().listen(
-      (printer) {
-        _printers.add(printer);
-        _appendLog('Found ${printer.model} (${printer.connectionType.name})');
-      },
-      onDone: () {
-        _searching = false;
-        _appendLog('Discovery completed: ${_printers.length} printers');
-      },
-      onError: (Object e) {
-        _searching = false;
-        _appendLog(
-          e is PlatformException
-              ? 'Discovery failed: ${e.code} ${e.message}'
-              : 'Discovery failed: $e',
+    // then the Wi-Fi/BLE/USB results as the searches complete.
+    _discoverySubscription = _plugin
+        .discoverPrintersStream(connectionTypes: connectionTypes)
+        .listen(
+          (printer) {
+            _printers.add(printer);
+            _appendLog(
+              'Found ${printer.model} (${printer.connectionType.name})',
+            );
+          },
+          onDone: () {
+            _searching = false;
+            _appendLog('Discovery completed: ${_printers.length} printers');
+          },
+          onError: (Object e) {
+            _searching = false;
+            _appendLog(
+              e is PlatformException
+                  ? 'Discovery failed: ${e.code} ${e.message}'
+                  : 'Discovery failed: $e',
+            );
+          },
         );
-      },
-    );
   }
 
   /// Cancels the running search (also aborts the native scans).
@@ -172,25 +187,6 @@ class PrinterController extends ChangeNotifier {
       _busy = false;
       notifyListeners();
     }
-  }
-
-  /// Connects directly to a Wi-Fi printer by IP address.
-  ///
-  /// Useful for Wi-Fi Direct / access-point mode, where the SDK discovery
-  /// often cannot find the printer (the network search scans the subnet via
-  /// broadcast, which is unreliable on the Direct link). The IP is shown on
-  /// the printer LCD (Menu → Network → IP Address).
-  Future<void> connectByIp(String ip, {String model = 'QL-820NWB'}) async {
-    final address = ip.trim();
-    if (address.isEmpty) return;
-    await connect(
-      BrotherPrinter(
-        model: model,
-        connectionType: BrotherConnectionType.wifi,
-        ipAddress: address,
-        serialNumber: '',
-      ),
-    );
   }
 
   Future<void> disconnect() async {

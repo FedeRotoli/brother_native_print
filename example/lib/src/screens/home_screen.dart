@@ -41,13 +41,6 @@ class _HomeScreenState extends State<HomeScreen> {
             title: const Text('Brother Native Print demo'),
             actions: [
               IconButton(
-                tooltip: 'Connect by IP (Wi-Fi Direct)',
-                onPressed: controller.busy
-                    ? null
-                    : () => _promptConnectByIp(context),
-                icon: const Icon(Icons.wifi),
-              ),
-              IconButton(
                 tooltip: controller.searching
                     ? 'Stop search'
                     : 'Search printers',
@@ -55,7 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ? null
                     : (controller.searching
                           ? controller.stopSearch
-                          : controller.discover),
+                          : () => _promptSearchChannels(context)),
                 icon: controller.searching
                     ? const Icon(Icons.stop)
                     : const Icon(Icons.search),
@@ -82,39 +75,68 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Asks for an IP address and connects directly to a Wi-Fi printer.
-  Future<void> _promptConnectByIp(BuildContext context) async {
-    final textController = TextEditingController();
-    final ip = await showDialog<String>(
+  /// Asks which channels to scan (Wi-Fi, Bluetooth, USB) and starts discovery.
+  Future<void> _promptSearchChannels(BuildContext context) async {
+    final selected = await showDialog<Set<BrotherConnectionType>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Connect by IP'),
-        content: TextField(
-          controller: textController,
-          keyboardType: TextInputType.text,
-          decoration: const InputDecoration(
-            labelText: 'Printer IP address',
-            hintText: 'e.g. 192.168.0.1 (printer LCD: Network → IP)',
-          ),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(textController.text),
-            child: const Text('Connect'),
-          ),
+      builder: (context) => const _ChannelPickerDialog(),
+    );
+    if (selected == null || selected.isEmpty) return;
+    await _controller.discover(connectionTypes: selected);
+  }
+}
+
+/// Lets the user pick which discovery channels to scan.
+class _ChannelPickerDialog extends StatefulWidget {
+  const _ChannelPickerDialog();
+
+  @override
+  State<_ChannelPickerDialog> createState() => _ChannelPickerDialogState();
+}
+
+class _ChannelPickerDialogState extends State<_ChannelPickerDialog> {
+  final Set<BrotherConnectionType> _selected = {
+    BrotherConnectionType.wifi,
+    BrotherConnectionType.bluetooth,
+    BrotherConnectionType.usb,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Search printers'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final type in BrotherConnectionType.values)
+            CheckboxListTile(
+              value: _selected.contains(type),
+              onChanged: (checked) {
+                setState(() {
+                  if (checked == true) {
+                    _selected.add(type);
+                  } else {
+                    _selected.remove(type);
+                  }
+                });
+              },
+              title: Text(type.name),
+              secondary: Icon(_PrinterList._iconFor(type)),
+            ),
         ],
       ),
-    );
-    textController.dispose();
-    if (ip == null) return;
-    await _controller.connectByIp(
-      ip,
-      model: _controller.selected?.model ?? 'QL-820NWB',
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _selected.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(_selected),
+          child: const Text('Search'),
+        ),
+      ],
     );
   }
 }

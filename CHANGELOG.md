@@ -1,3 +1,21 @@
+## 0.4.0
+
+- **More reliable Wi-Fi discovery (unicast subnet sweep)**:
+  the SDK's network search relies on a broadcast that some routers filter and
+  that some printer firmware ignores, so it could report 0 printers even when
+  the phone and the printer were on the same healthy network. The plugin now
+  also probes every host on the phone's subnet directly (unicast SNMP, same
+  MIB the SDK uses) and reports printers as they are found — on Android and
+  iOS.
+- **Discovery reports Brother printers only**: the SNMP model is normalized
+  and non-Brother devices are filtered out, so other network printers no
+  longer appear in the Wi-Fi results.
+- **Fix**: the SNMP response parser now reads the value inside the GetResponse
+  PDU, so the printer model is extracted correctly (an unsupported OID could
+  previously report the SNMP community — "public" — or nothing as the model).
+- **Example**: the search button now opens a channel picker (Wi-Fi / Bluetooth
+  / USB) before scanning, and the "Connect by IP" button was removed.
+
 ## 0.3.0
 
 - **New API `getConnectedPrinter()`**: returns the printer currently connected

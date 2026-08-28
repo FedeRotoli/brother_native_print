@@ -12,13 +12,15 @@ export 'src/presets.dart';
 /// Bluetooth, [connect] to open a connection, [printImage] / [printPdf] to
 /// print, and [statusStream] to observe the connection state.
 class BrotherNativePrint {
-  /// Discovers compatible Brother printers.
+  /// Discovers Brother printers.
   ///
   /// [connectionTypes] selects which discovery transports to use. By default
   /// Wi-Fi and Bluetooth are searched; USB is available on Android only.
   ///
-  /// Discovery does **not** filter by model: every compatible Brother printer
-  /// reported by the SDK is returned.
+  /// Only Brother printers are reported: on Wi-Fi the SDK's network scan is
+  /// complemented by probing the phone's subnet directly (unicast SNMP), and
+  /// non-Brother devices are filtered out. Discovery is not limited to the
+  /// models supported by [connect] — every Brother printer found is returned.
   ///
   /// On Android 12+, Bluetooth permissions (`BLUETOOTH_SCAN`,
   /// `BLUETOOTH_CONNECT`) must be granted at runtime before calling this
@@ -44,6 +46,10 @@ class BrotherNativePrint {
   /// complete: the UI can update live instead of waiting for the whole
   /// discovery to finish. The searches run in parallel, so the total time is
   /// roughly [timeout], not the sum of the per-transport timeouts.
+  ///
+  /// Only Brother printers are emitted; the Wi-Fi search also probes the local
+  /// subnet with unicast SNMP (some routers/printer firmware ignore the SDK's
+  /// broadcast), so printers the SDK network scan misses are still found.
   ///
   /// The stream completes when all the requested searches finish. Errors in a
   /// single transport (e.g. missing Bluetooth permissions) are logged and do

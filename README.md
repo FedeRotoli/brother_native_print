@@ -22,13 +22,15 @@ Built on top of the official Brother SDKs:
 - Print **images** (PNG/JPEG) and **PDFs** with configurable options:
   copies, paper type, auto-cut and custom paper size.
 - Normalized, platform-independent error codes (`BrotherPrintErrorCode`).
-- No model filtering during discovery: every compatible Brother printer that
-  the SDK reports is returned.
+- Discovery reports **Brother printers only**: on Wi-Fi the plugin probes the
+  local subnet directly (unicast SNMP) in addition to the SDK's network scan,
+  so printers the SDK broadcast misses are still found.
 
 ## Supported printers
 
-Discovery shows **all** compatible Brother printers found on the network or via
-Bluetooth, regardless of model.
+Discovery reports **Brother printers only**. On Wi-Fi the plugin probes the
+local subnet with unicast SNMP in addition to the SDK's network search, and
+non-Brother devices are filtered out.
 
 Printing is implemented and tested on:
 
@@ -346,9 +348,9 @@ SDK calls run on a dedicated single thread, as required by the SDK.
 - On iOS the Bluetooth channel can only be obtained through discovery: call
   `discoverPrinters()` and pass a found printer to `connect()`.
 - USB printing is supported on Android only.
-- Discovery does not filter by model. Connection and printing are supported
-  and tested only on the RJ-2050 and QL-820NWB models (other models return
-  `invalidArgument` from `connect()`).
+- Discovery reports Brother printers only. Connection and printing are
+  supported and tested only on the RJ-2050 and QL-820NWB models (other models
+  return `invalidArgument` from `connect()`).
 
 ## FAQ
 
@@ -375,8 +377,8 @@ Only the models **highlighted in the
 [Supported printers](#supported-printers) table** — the RJ-2050 and the
 QL-820NWB — are tested. However, the package is flexible:
 
-- Discovery reports **all** compatible Brother printers returned by the SDK
-  (no model filtering).
+- Discovery reports **Brother printers only** (the Wi-Fi search filters out
+  non-Brother devices).
 - The package ships **bundled custom paper definitions for many RJ/TD models**
   (`custom_paper/`), so paper sizes exist for more printers than the tested
   ones.
