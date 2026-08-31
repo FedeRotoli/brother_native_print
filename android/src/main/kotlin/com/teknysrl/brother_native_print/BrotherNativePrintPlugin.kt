@@ -8,6 +8,8 @@ import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.brother.sdk.lmprinter.BLESearchOption
 import com.brother.sdk.lmprinter.Channel
@@ -79,6 +81,22 @@ class BrotherNativePrintPlugin :
         Thread(r, "brother-print").apply { isDaemon = true }
     }
     private val printDispatcher = printExecutor.asCoroutineDispatcher()
+
+    /**
+     * Runs [block] on the Android main thread.
+     *
+     * Flutter's [EventChannel.EventSink] (success/error/endOfStream) must be
+     * called on the main thread: the engine enforces it via
+     * `FlutterJNI.ensureRunningOnMainThread` and throws otherwise. All the sink
+     * calls in this plugin happen on background threads (IO scope, SDK
+     * discovery callbacks, unicast sweep executor), so they are routed through
+     * this handler.
+     */
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun postOnMain(block: () -> Unit) {
+        mainHandler.post { block() }
+    }
 
     companion object {
         private const val TAG = "BrotherNativePrint"
@@ -226,9 +244,12 @@ class BrotherNativePrintPlugin :
         cancelDiscovery()
 
         val ctx = context ?: run {
-            synchronized(this) { discoveryEventSink }?.error(
-                "pluginNotInitialized", "Plugin not initialized", null
-            )
+            val sink = synchronized(this) { discoveryEventSink }
+            if (sink != null) {
+                postOnMain {
+                    sink.error("pluginNotInitialized", "Plugin not initialized", null)
+                }
+            }
             return
         }
         val generation = ++discoveryGeneration
@@ -481,14 +502,14 @@ class BrotherNativePrintPlugin :
         }
         if (!shouldEmit) return
         val sink = synchronized(this) { discoveryEventSink } ?: return
-        sink.success(channelToMap(channel))
+        postOnMain { sink.success(channelToMap(channel)) }
     }
 
     /** Closes the discovery stream when every requested search finished. */
     private fun endDiscovery(generation: Long) {
         if (generation != discoveryGeneration) return
         val sink = synchronized(this) { discoveryEventSink } ?: return
-        sink.endOfStream()
+        postOnMain { sink.endOfStream() }
     }
 
     /** Stops the current discovery and asks the SDK to abort the scans. */
@@ -925,7 +946,8 @@ class BrotherNativePrintPlugin :
     // ------------------------------------------------------------------
 
     private fun emitState(state: String, error: Map<String, Any?>? = null) {
-        eventSink?.success(mapOf("state" to state, "error" to error))
+        val sink = eventSink ?: return
+        postOnMain { sink.success(mapOf("state" to state, "error" to error)) }
     }
 
     private fun failureCode(e: Exception): String = when (e) {

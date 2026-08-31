@@ -1,3 +1,15 @@
+## 0.4.1
+
+- **Fix (Android)**: discovery and status events are now emitted on the main
+  thread. Flutter requires `EventChannel.EventSink` calls (`success`, `error`,
+  `endOfStream`) to run on the Android main thread, but discovery streamed
+  channels, ended the stream and emitted status changes from background
+  threads (`Dispatchers.IO`, SDK discovery callbacks, unicast sweep threads),
+  crashing the app with "Methods marked with @UiThread must be executed on the
+  main thread". Events are now routed through a main-thread `Handler`;
+  `MethodChannel` results are unchanged (the engine documents them as safe to
+  call from any thread).
+
 ## 0.4.0
 
 - **More reliable Wi-Fi discovery (unicast subnet sweep)**:
