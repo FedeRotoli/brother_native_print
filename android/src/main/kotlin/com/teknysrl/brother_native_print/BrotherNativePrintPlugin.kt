@@ -542,6 +542,17 @@ class BrotherNativePrintPlugin :
      */
     private fun emitChannel(channel: Channel, generation: Long) {
         if (generation != discoveryGeneration) return
+        // The Bluetooth/BLE searches also return non-Brother devices (paired
+        // phones, headphones, other BLE peripherals...): drop them so a
+        // non-Brother device is not reported as a Brother printer. Wi-Fi and
+        // USB channels are always Brother (the SDK network search and the
+        // unicast sweep only report Brother printers).
+        if (channel.channelType == Channel.ChannelType.Bluetooth ||
+            channel.channelType == Channel.ChannelType.BluetoothLowEnergy
+        ) {
+            val rawModel = channel.extraInfo?.get(Channel.ExtraInfoKey.ModelName) as? String
+            if (!looksLikeBrotherDevice(rawModel)) return
+        }
         val key = channelKey(channel)
         val shouldEmit = synchronized(this) {
             if (discoveredChannels.containsKey(key)) {
@@ -1174,6 +1185,26 @@ class BrotherNativePrintPlugin :
  * is the varbind value. Failures (timeout, non-SNMP host, malformed packet)
  * return null.
  */
+
+/** Matches Brother label-printer model tokens (e.g. "QL-820NWB", "RJ-2050"). */
+internal val BROTHER_MODEL_PREFIX_REGEX = Regex("(QL|RJ|TD|PT|PJ|MW)-[A-Z]*[0-9]")
+
+/**
+ * True when a discovered Bluetooth device self-identifies as a Brother
+ * printer, i.e. its advertised name contains the "Brother" brand or one of
+ * the model-family tokens of the Brother label-printer lineup (QL, RJ, TD,
+ * PT, PJ, MW) followed by digits. Used to filter non-Brother devices that
+ * the Bluetooth/BLE searches can also return (paired phones, headphones,
+ * other BLE peripherals...): their names (e.g. "P460D_F81C") carry no
+ * Brother token and would otherwise be reported as a Brother printer.
+ */
+internal fun looksLikeBrotherDevice(name: String?): Boolean {
+    if (name.isNullOrBlank()) return false
+    val upper = name.uppercase().replace('_', '-')
+    if (upper.contains("BROTHER")) return true
+    return BROTHER_MODEL_PREFIX_REGEX.containsMatchIn(upper)
+}
+
 private object SnmpProbe {
     /** Brother private MIB (enterprise 2435): printer model name. */
     const val MODEL_OID = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"

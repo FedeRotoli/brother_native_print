@@ -260,6 +260,15 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
 
   private func emitChannel(_ channel: BRLMChannel, generation: Int) {
     guard generation == discoveryGeneration else { return }
+    // The Bluetooth/BLE searches also return non-Brother devices (paired
+    // phones, headphones, other BLE peripherals...): drop them so a
+    // non-Brother device is not reported as a Brother printer. Wi-Fi channels
+    // are always Brother (the SDK network search and the unicast sweep only
+    // report Brother printers).
+    if channel.channelType == .bluetoothMFi || channel.channelType == .bluetoothLowEnergy {
+      let rawModel = channel.extraInfo?[BRLMChannelExtraInfoKeyModelName] as? String
+      guard Self.looksLikeBrotherDevice(rawModel) else { return }
+    }
     let key = Self.channelKey(channel)
     let shouldEmit = synchronized { () -> Bool in
       if discoveredChannels[key] != nil { return false }
@@ -390,6 +399,25 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     if upper.contains("QL-820NWB") { return "QL-820NWB" }
     if upper.contains("RJ-2050") { return "RJ-2050" }
     return upper.contains("BROTHER") ? trimmed : nil
+  }
+
+  private static let brotherModelPrefixRegex =
+    try? NSRegularExpression(pattern: "(QL|RJ|TD|PT|PJ|MW)-[A-Z]*[0-9]", options: [])
+
+  /// True when a discovered Bluetooth device self-identifies as a Brother
+  /// printer, i.e. its advertised name contains the "Brother" brand or one of
+  /// the model-family tokens of the Brother label-printer lineup (QL, RJ, TD,
+  /// PT, PJ, MW) followed by digits. Used to filter non-Brother devices that
+  /// the Bluetooth/BLE searches can also return (paired phones, headphones,
+  /// other BLE peripherals...): their names (e.g. "P460D_F81C") carry no
+  /// Brother token and would otherwise be reported as a Brother printer.
+  private static func looksLikeBrotherDevice(_ name: String?) -> Bool {
+    guard let name = name, !name.isEmpty else { return false }
+    let upper = name.uppercased().replacingOccurrences(of: "_", with: "-")
+    if upper.contains("BROTHER") { return true }
+    guard let regex = brotherModelPrefixRegex else { return false }
+    let range = NSRange(upper.startIndex..<upper.endIndex, in: upper)
+    return regex.firstMatch(in: upper, options: [], range: range) != nil
   }
 
   /// The phone's Wi-Fi IPv4 address and netmask ("en0"), or nil when not on Wi-Fi.

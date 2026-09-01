@@ -1,3 +1,12 @@
+## 0.6.0
+
+- **Fix (Android & iOS)**: discovery no longer reports non-Brother devices as
+  Brother printers. The Bluetooth/BLE searches also return arbitrary devices
+  (paired phones, headphones, other BLE peripherals...): they are now filtered
+  out in `emitChannel`, keeping only devices whose advertised name contains the
+  "Brother" brand or a Brother label-printer model token (`QL-`, `RJ-`, `TD-`,
+  `PT-`, `PJ-`, `MW-` followed by digits).
+
 ## 0.5.1
 
 - **Fix (iOS)**: the bundled `BRLMPrinterKit.xcframework` is now ad-hoc
