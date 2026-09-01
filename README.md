@@ -25,6 +25,10 @@ Built on top of the official Brother SDKs:
 - Discovery reports **Brother printers only**: on Wi-Fi the plugin probes the
   local subnet directly (unicast SNMP) in addition to the SDK's network scan,
   so printers the SDK broadcast misses are still found.
+- The **MAC address** is reported when the platform can provide it: on Wi-Fi
+  it is read via SNMP (`ifPhysAddress`), and classic Bluetooth on Android
+  reports the device address. BLE MAC is unavailable (the OS hides it for
+  privacy).
 
 ## Supported printers
 

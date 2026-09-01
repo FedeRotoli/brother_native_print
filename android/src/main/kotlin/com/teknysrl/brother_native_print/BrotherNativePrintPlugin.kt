@@ -20,6 +20,7 @@ import com.brother.sdk.lmprinter.NetworkSearchOption
 import com.brother.sdk.lmprinter.OpenChannelError
 import com.brother.sdk.lmprinter.PrintError
 import com.brother.sdk.lmprinter.PrinterDriver
+import com.brother.sdk.lmprinter.RequestPrinterInfoErrorCode
 import com.brother.sdk.lmprinter.PrinterStatus
 import com.brother.sdk.lmprinter.PrinterDriverGenerator
 import com.brother.sdk.lmprinter.PrinterModel
@@ -420,9 +421,17 @@ class BrotherNativePrintPlugin :
                             clean = normalizeModel(privateModel.value)
                         }
                         if (clean == null) return@execute
+                        // IF-MIB ifPhysAddress returns the NIC MAC as raw
+                        // bytes (same OID the SDK network search uses).
+                        val mac = runCatching {
+                            SnmpProbe.probeRaw(host, SnmpProbe.IF_PHYS_ADDRESS_OID, 400)
+                        }.getOrNull()?.let { SnmpProbe.formatMac(it) }
                         val channel = Channel.newWifiChannel(host).apply {
                             extraInfo[Channel.ExtraInfoKey.ModelName] = clean
                             extraInfo[Channel.ExtraInfoKey.IpAddress] = host
+                            if (mac != null) {
+                                extraInfo[Channel.ExtraInfoKey.MACAddress] = mac
+                            }
                         }
                         emitChannel(channel, generation)
                         found.incrementAndGet()
@@ -627,10 +636,20 @@ class BrotherNativePrintPlugin :
         val printer = ConnectedPrinter(model, modelName, connectionType, ip, mac, serial)
         // Reachability probe: open and immediately close a channel.
         val probe = openDriver(printer)
+        // The SDK only fills the serial in the channel's extraInfo for USB:
+        // over Bluetooth and Wi-Fi discovery reports an empty serial, so query
+        // the real one over the just-opened connection and persist it (the
+        // query falls back to the passed serial when unsupported/unavailable).
+        val serialInfo = runCatching { probe.requestSerialNumber() }.getOrNull()
+        val realSerial = serialInfo
+            ?.takeIf { it.error.code == RequestPrinterInfoErrorCode.NoError }
+            ?.printerInfo
+            ?.takeIf { it.isNotBlank() }
+            ?: printer.serial
         runCatching { probe.closeChannel() }
 
         synchronized(this) {
-            connectedPrinter = printer
+            connectedPrinter = printer.copy(serial = realSerial)
             currentModel = model
         }
         emitState("connected")
@@ -1039,10 +1058,31 @@ class BrotherNativePrintPlugin :
     // Channels -> Dart map
     // ------------------------------------------------------------------
 
+    /**
+     * MAC address of a discovered channel, when the SDK/network reports one.
+     *
+     * The SDK fills `ExtraInfoKey.MACAddress` for Wi-Fi channels (read via
+     * SNMP during the network search) and for the unicast sweep once a MAC
+     * probe succeeds. For classic Bluetooth it leaves it empty but stores the
+     * device address (e.g. "00:80:F0:...") as the channel info, so it falls
+     * back to that. BLE channels carry the advertised name, not a MAC, so
+     * they keep returning null (the OS hides the BLE MAC on some platforms).
+     */
+    private fun channelMac(channel: Channel): String? {
+        val info = channel.extraInfo
+        return (info?.get(Channel.ExtraInfoKey.MACAddress) as? String)
+            ?.takeIf { it.isNotBlank() }
+            ?: if (channel.channelType == Channel.ChannelType.Bluetooth) {
+                channel.channelInfo.takeIf { it.contains(':') }
+            } else {
+                null
+            }
+    }
+
     private fun channelKey(channel: Channel): String {
         val info = channel.extraInfo
         val ip = info?.get(Channel.ExtraInfoKey.IpAddress) ?: ""
-        val mac = info?.get(Channel.ExtraInfoKey.MACAddress) ?: ""
+        val mac = channelMac(channel) ?: ""
         val serial = info?.get(Channel.ExtraInfoKey.SerialNubmer) ?: ""
         return when (channel.channelType) {
             Channel.ChannelType.Wifi -> "wifi|$ip"
@@ -1073,7 +1113,7 @@ class BrotherNativePrintPlugin :
             "connectionType" to connectionType,
             "ipAddress" to (info?.get(Channel.ExtraInfoKey.IpAddress)
                 ?: if (channel.channelType == Channel.ChannelType.Wifi) channel.channelInfo else null),
-            "macAddress" to info?.get(Channel.ExtraInfoKey.MACAddress),
+            "macAddress" to channelMac(channel),
             // NB: the SDK key is "SerialNubmer" (official Brother typo).
             "serialNumber" to (info?.get(Channel.ExtraInfoKey.SerialNubmer) ?: ""),
         )
@@ -1141,6 +1181,8 @@ private object SnmpProbe {
     const val SYSDESCR_OID = "1.3.6.1.2.1.1.1.0"
     /** Host Resources hrDeviceDescr, also reports the device description. */
     const val HR_DEVICE_DESCR_OID = "1.3.6.1.2.1.25.3.2.1.3.1"
+    /** IF-MIB ifPhysAddress (interface 1): the primary NIC MAC as raw bytes. */
+    const val IF_PHYS_ADDRESS_OID = "1.3.6.1.2.1.2.2.1.6.1"
     private const val SNMP_PORT = 161
     private const val COMMUNITY = "public"
 
@@ -1169,6 +1211,33 @@ private object SnmpProbe {
         } catch (e: Exception) {
             ProbeResult(false, null)
         }
+    }
+
+    /**
+     * Sends an SNMPv1 GET and returns the raw OCTET STRING bytes of the
+     * varbind value (for binary MIB values such as a MAC address), or null.
+     */
+    fun probeRaw(host: String, oid: String, timeoutMs: Int): ByteArray? {
+        return try {
+            val request = buildGetRequest(oid)
+            DatagramSocket().use { socket ->
+                socket.soTimeout = timeoutMs
+                val address = InetAddress.getByName(host)
+                socket.send(DatagramPacket(request, request.size, address, SNMP_PORT))
+                val buffer = ByteArray(2048)
+                val packet = DatagramPacket(buffer, buffer.size)
+                socket.receive(packet)
+                parseRawResponse(packet.data, packet.length)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Formats 6 raw bytes as "XX:XX:XX:XX:XX:XX", or null when not a MAC. */
+    fun formatMac(bytes: ByteArray): String? {
+        if (bytes.size != 6) return null
+        return bytes.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
     }
 
     // ------------------------------------------------------------------
@@ -1283,6 +1352,33 @@ private object SnmpProbe {
                 // 0x30 = SEQUENCE; 0xA0/0xA1/0xA2 = SNMP PDUs (the GetResponse
                 // is 0xA2): the varbind value lives inside them.
                 0x30, 0xA0, 0xA1, 0xA2 -> walkTlv(data, pos, len, out)
+            }
+            pos += len
+        }
+    }
+
+    private fun parseRawResponse(data: ByteArray, length: Int): ByteArray? {
+        val values = ArrayList<ByteArray>()
+        walkTlvRaw(data, 0, length, values)
+        // The first OCTET STRING is always the community; a real response has
+        // a second one (the varbind value).
+        if (values.size < 2) return null
+        val value = values.last()
+        return if (value.contentEquals(COMMUNITY.toByteArray(Charsets.US_ASCII))) null else value
+    }
+
+    private fun walkTlvRaw(data: ByteArray, offset: Int, length: Int, out: MutableList<ByteArray>) {
+        var pos = offset
+        val end = offset + length
+        while (pos < end) {
+            val tag = data[pos].toInt() and 0xFF
+            pos++
+            val (len, next) = readLength(data, pos)
+            pos = next
+            if (pos + len > data.size) return
+            when (tag) {
+                0x04 -> out.add(data.copyOfRange(pos, pos + len))
+                0x30, 0xA0, 0xA1, 0xA2 -> walkTlvRaw(data, pos, len, out)
             }
             pos += len
         }

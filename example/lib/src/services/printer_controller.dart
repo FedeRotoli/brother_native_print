@@ -168,17 +168,36 @@ class PrinterController extends ChangeNotifier {
   // Connection
   // ---------------------------------------------------------------------
 
+  /// Whether [a] and [b] describe the same physical printer.
+  ///
+  /// Identity-based: after [connect] the native side returns a rebuilt
+  /// [BrotherPrinter] (from `getConnectedPrinter`) that is not the same
+  /// instance as the discovered one, so the fields are compared to find and
+  /// replace the matching list entry.
+  static bool _sameIdentity(BrotherPrinter a, BrotherPrinter b) =>
+      a.model == b.model &&
+      a.connectionType == b.connectionType &&
+      a.ipAddress == b.ipAddress &&
+      a.macAddress == b.macAddress;
+
   Future<void> connect(BrotherPrinter printer) async {
     _busy = true;
     _detectedPaperType = null;
     notifyListeners();
     try {
       final ok = await _plugin.connect(printer);
-      _selected = printer;
+      // The native side resolves the real serial number over the active
+      // connection (discovery cannot report it for Bluetooth/Wi-Fi). The
+      // discovered entry is replaced with the resolved printer (same instance)
+      // so the list shows the serial/MAC and the row keeps its highlight.
+      final resolved = (await _plugin.getConnectedPrinter()) ?? printer;
+      final index = _printers.indexWhere((p) => _sameIdentity(p, printer));
+      if (index != -1) _printers[index] = resolved;
+      _selected = resolved;
       _appendLog(
         ok
             ? 'Connected to '
-                  '${printer.serialNumber.isNotEmpty ? printer.serialNumber : printer.model}'
+                  '${resolved.serialNumber.isNotEmpty ? resolved.serialNumber : resolved.model}'
             : 'Connection failed',
       );
     } on PlatformException catch (e) {

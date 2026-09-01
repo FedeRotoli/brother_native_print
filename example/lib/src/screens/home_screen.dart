@@ -201,7 +201,7 @@ class _PrinterList extends StatelessWidget {
             subtitle: Text(
               'IP: ${printer.ipAddress ?? '-'} '
               'MAC: ${printer.macAddress ?? '-'}\n'
-              'SN: ${printer.serialNumber}',
+              'SN: ${printer.serialNumber.isNotEmpty ? printer.serialNumber : '-'}',
             ),
             trailing: selected
                 ? TextButton(

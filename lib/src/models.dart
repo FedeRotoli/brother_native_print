@@ -9,7 +9,16 @@ class BrotherPrinter {
   final String model;
   final BrotherConnectionType connectionType;
   final String? ipAddress;
+
+  /// MAC address, when the SDK/discovery can report one: Wi-Fi printers (read
+  /// via SNMP `ifPhysAddress`) and classic Bluetooth on Android (the device
+  /// address). `null` for BLE, where the OS hides the BLE MAC for privacy.
   final String? macAddress;
+
+  /// Serial number as reported by the SDK. Note that discovery leaves it empty
+  /// for Bluetooth and Wi-Fi printers (the SDK only reports it over an active
+  /// connection): use [BrotherNativePrint.getConnectedPrinter] after
+  /// connecting to obtain the resolved serial number.
   final String serialNumber;
 
   const BrotherPrinter({

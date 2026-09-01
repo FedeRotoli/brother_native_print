@@ -1,3 +1,20 @@
+## 0.5.0
+
+- **Fix (Android & iOS)**: the serial number was empty for printers found over
+  Bluetooth and Wi-Fi. The SDK only populates the serial in the discovery
+  channel's extra info for USB (and sometimes MFi Bluetooth), so the plugin now
+  queries the real serial over the active connection while connecting
+  (`requestSerialNumber()` on Android / `BRLMPrinterDriver` on iOS) and
+  persists it in the connected printer returned by `getConnectedPrinter()`.
+  The example app refreshes the selected printer after connect to display it.
+- **Fix (Android & iOS)**: the MAC address now shows up wherever the platform
+  can report it. On Wi-Fi the unicast subnet sweep probes `ifPhysAddress` via
+  SNMP (same OID the SDK network search uses), so network printers found by
+  the sweep also carry a MAC; on Android, classic Bluetooth printers report
+  their device address as the MAC (the SDK leaves the extra-info MAC empty but
+  stores the address as the channel info). BLE MAC stays `null` (the OS hides
+  it for privacy on both platforms).
+
 ## 0.4.2
 
 - **Fix (Android & iOS)**: the printer model is now extracted (normalized)

@@ -346,6 +346,12 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         let channel = BRLMChannel(wifiIPAddress: host)
         channel.extraInfo?[BRLMChannelExtraInfoKeyModelName] = model as NSString
         channel.extraInfo?[BRLMChannelExtraInfoKeyIpAddress] = host as NSString
+        // IF-MIB ifPhysAddress returns the NIC MAC as raw bytes (same OID the
+        // SDK network search uses); format it only when it is a valid MAC.
+        if let macBytes = SnmpClient.probeRaw(host: host, oid: SnmpClient.ifPhysAddressOID, timeoutMs: 400),
+           let mac = SnmpClient.formatMac(macBytes) {
+          channel.extraInfo?[BRLMChannelExtraInfoKeyMacAddress] = mac as NSString
+        }
         self.emitChannel(channel, generation: generation)
         foundLock.lock()
         found += 1
@@ -496,6 +502,18 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         message: probe.error.errorRecoverySuggestion ?? "Unable to open the channel"
       )
     }
+    // Discovery only fills the serial in the channel's extraInfo for USB (and
+    // sometimes MFi Bluetooth): over Wi-Fi and BLE it is empty, so query the
+    // real serial over the just-opened connection and persist it (falls back
+    // to the passed serial when unsupported/unavailable).
+    var resolvedSerial = serial
+    if let driver = probe.driver,
+       let result = driver.requestSerialNumber(),
+       result.error.code == .noError,
+       let value = result.printerInfo as? String,
+       !value.isEmpty {
+      resolvedSerial = value
+    }
     probe.driver?.closeChannel()
 
     synchronized {
@@ -506,7 +524,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         connectionType: connectionType,
         ip: ip,
         mac: mac,
-        serial: serial
+        serial: resolvedSerial
       )
     }
     emitState("connected")
@@ -1005,6 +1023,8 @@ private struct SnmpClient {
   static let sysDescrOID = "1.3.6.1.2.1.1.1.0"
   /// Host Resources hrDeviceDescr, also reports the device description.
   static let hrDeviceDescrOID = "1.3.6.1.2.1.25.3.2.1.3.1"
+  /// IF-MIB ifPhysAddress (interface 1): the primary NIC MAC as raw bytes.
+  static let ifPhysAddressOID = "1.3.6.1.2.1.2.2.1.6.1"
   private static let port: UInt16 = 161
   private static let community = "public"
 
@@ -1046,6 +1066,42 @@ private struct SnmpClient {
     }
     guard received > 0 else { return ProbeResult(responded: false, value: nil) }
     return ProbeResult(responded: true, value: parseResponse(Array(buffer[0..<received])))
+  }
+
+  /// Sends an SNMPv1 GET and returns the raw OCTET STRING bytes of the
+  /// varbind value (for binary MIB values such as a MAC address), or nil.
+  static func probeRaw(host: String, oid: String, timeoutMs: Int) -> [UInt8]? {
+    guard let dest = ipv4Destination(host) else { return nil }
+    let request = buildGetRequest(oid: oid)
+    let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    guard fd >= 0 else { return nil }
+    defer { close(fd) }
+
+    var tv = timeval(tv_sec: timeoutMs / 1000, tv_usec: Int32((timeoutMs % 1000) * 1000))
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+    let sent = request.withUnsafeBytes { (buf: UnsafeRawBufferPointer) -> Int in
+      var destMutable = dest
+      return withUnsafePointer(to: &destMutable) { destPtr in
+        destPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sock in
+          sendto(fd, buf.baseAddress, buf.count, 0, sock, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+      }
+    }
+    guard sent == request.count else { return nil }
+
+    var buffer = [UInt8](repeating: 0, count: 2048)
+    let received = buffer.withUnsafeMutableBytes { (buf: UnsafeMutableRawBufferPointer) -> Int in
+      recvfrom(fd, buf.baseAddress, buf.count, 0, nil, nil)
+    }
+    guard received > 0 else { return nil }
+    return parseRawResponse(Array(buffer[0..<received]))
+  }
+
+  /// Formats 6 raw bytes as "XX:XX:XX:XX:XX:XX", or nil when not a MAC.
+  static func formatMac(_ bytes: [UInt8]) -> String? {
+    guard bytes.count == 6 else { return nil }
+    return bytes.map { String(format: "%02X", $0) }.joined(separator: ":")
   }
 
   // ------------------------------------------------------------------
@@ -1167,6 +1223,37 @@ private struct SnmpClient {
       // 0xA2): the varbind value lives inside them.
       case 0x30, 0xA0, 0xA1, 0xA2:
         walkTlv(data, offset: pos, length: len, out: &out)
+      default:
+        break
+      }
+      pos += len
+    }
+  }
+
+  private static func parseRawResponse(_ data: [UInt8]) -> [UInt8]? {
+    var values: [[UInt8]] = []
+    walkTlvRaw(data, offset: 0, length: data.count, out: &values)
+    // The first OCTET STRING is always the community; a real response has
+    // a second one (the varbind value).
+    guard values.count >= 2 else { return nil }
+    let value = values.last ?? []
+    return value == Array(community.utf8) ? nil : value
+  }
+
+  private static func walkTlvRaw(_ data: [UInt8], offset: Int, length: Int, out: inout [[UInt8]]) {
+    var pos = offset
+    let end = offset + length
+    while pos < end && pos < data.count {
+      let tag = data[pos]
+      pos += 1
+      guard let (len, next) = readLength(data, offset: pos) else { return }
+      pos = next
+      guard pos + len <= data.count else { return }
+      switch tag {
+      case 0x04:
+        out.append(Array(data[pos..<(pos + len)]))
+      case 0x30, 0xA0, 0xA1, 0xA2:
+        walkTlvRaw(data, offset: pos, length: len, out: &out)
       default:
         break
       }
