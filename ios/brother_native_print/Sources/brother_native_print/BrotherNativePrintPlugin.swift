@@ -507,12 +507,13 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     // real serial over the just-opened connection and persist it (falls back
     // to the passed serial when unsupported/unavailable).
     var resolvedSerial = serial
-    if let driver = probe.driver,
-       let result = driver.requestSerialNumber(),
-       result.error.code == .noError,
-       let value = result.printerInfo as? String,
-       !value.isEmpty {
-      resolvedSerial = value
+    if let driver = probe.driver {
+      let result = driver.requestSerialNumber()
+      if result.error.code == .noError,
+         let value = result.printerInfo as? String,
+         !value.isEmpty {
+        resolvedSerial = value
+      }
     }
     probe.driver?.closeChannel()
 

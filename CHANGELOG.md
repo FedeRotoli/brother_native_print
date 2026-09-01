@@ -1,3 +1,15 @@
+## 0.5.1
+
+- **Fix (iOS)**: the bundled `BRLMPrinterKit.xcframework` is now ad-hoc
+  re-signed and its `.swiftinterface` headers are normalized to LF line
+  endings. The previous release shipped an unsigned framework whose
+  interfaces used CRLF, which Xcode 26 / Swift 6.3.3 fails to parse (error
+  reading `swift-interface-format-version`) and can trip stricter
+  framework-validation checks.
+- **Fix (iOS)**: fixed a compile error in `BrotherNativePrintPlugin.swift`
+  where `requestSerialNumber()` (BRLMPrinterKit 4.13.0) returns a non-Optional
+  result and can no longer be used in an `if let` binding.
+
 ## 0.5.0
 
 - **Fix (Android & iOS)**: the serial number was empty for printers found over

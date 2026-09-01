@@ -178,7 +178,7 @@
 		</data>
 		<key>Headers/BRLMPrinterKit-Swift.h</key>
 		<data>
-		S8ey3gT/9lbk+b5a3dW9813Ws18=
+		5pPEWIQfNdZlxrShZgHeJoNqbnk=
 		</data>
 		<key>Headers/BRLMPrinterKit.h</key>
 		<data>
@@ -606,35 +606,27 @@
 		</data>
 		<key>Info.plist</key>
 		<data>
-		j8RXcx1Jtc6genFVCwgNpQnq9Ds=
+		FBE1EZANqyWzB79/24dLoEfN3JA=
 		</data>
 		<key>MarginViewController.nib</key>
 		<data>
 		jOm+rxRpAOPpyw2BCTp1GMMtVN8=
 		</data>
-		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios-simulator.abi.json</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.abi.json</key>
 		<data>
 		QaNuGyU6VXJkYTwwB1LgTcLM9kU=
 		</data>
-		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios-simulator.swiftdoc</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.private.swiftinterface</key>
 		<data>
-		pLVlBn8ttT8zvp2sGw63jOwgYjo=
+		/Wm3PhPmCwJliudsCMEOtq8vEoE=
 		</data>
-		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios-simulator.swiftinterface</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.swiftdoc</key>
 		<data>
-		F11u7IfEkC8qJsNV8FajUR643Yc=
+		6P+FtNnTBNeMX7ObArCt3lxDI4E=
 		</data>
-		<key>Modules/BRLMPrinterKit.swiftmodule/x86_64-apple-ios-simulator.abi.json</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.swiftinterface</key>
 		<data>
-		QaNuGyU6VXJkYTwwB1LgTcLM9kU=
-		</data>
-		<key>Modules/BRLMPrinterKit.swiftmodule/x86_64-apple-ios-simulator.swiftdoc</key>
-		<data>
-		GcsvT9ozHFBExYskMTlzapqVsKA=
-		</data>
-		<key>Modules/BRLMPrinterKit.swiftmodule/x86_64-apple-ios-simulator.swiftinterface</key>
-		<data>
-		rQllDEjniUJOuA6FJNr6gm2WpL8=
+		/Wm3PhPmCwJliudsCMEOtq8vEoE=
 		</data>
 		<key>Modules/module.modulemap</key>
 		<data>
@@ -1205,7 +1197,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Fx/NqmGFjvIQtT9wBICIYAircdiOqcjrOndDfLGW1Lg=
+			KSsf/iZWQRRhNYYK6pzezXkB0ocnetUR2nxWr7E0dLg=
 			</data>
 		</dict>
 		<key>Headers/BRLMPrinterKit.h</key>
@@ -1957,46 +1949,32 @@
 			vnoPJD5vqYs2EVV1YUrmcUTeNHRnyl1vI/pMG5aRjtw=
 			</data>
 		</dict>
-		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios-simulator.abi.json</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.abi.json</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			xKxkCv79mRBZuFIDa6uM5vMlE7Wn+l1RKcKYEMUeW+k=
 			</data>
 		</dict>
-		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios-simulator.swiftdoc</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.private.swiftinterface</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			8gHGbKw2y9XFnpJjdeIjq5OhXt11DTKpfA/L9O6TDvI=
+			6A0gq47qBar2pgpOfNlyrl4o+RlXkuCaxC5g5+RpKcc=
 			</data>
 		</dict>
-		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios-simulator.swiftinterface</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.swiftdoc</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			k2HR/Lyqy1eTuG/Wczppuz0y7cbLNrAIGy/o9Lnj5BI=
+			+gbT/Fa9x8ftAXS29kuojYrxRz3VYfozvL03iFvXm6o=
 			</data>
 		</dict>
-		<key>Modules/BRLMPrinterKit.swiftmodule/x86_64-apple-ios-simulator.abi.json</key>
+		<key>Modules/BRLMPrinterKit.swiftmodule/arm64-apple-ios.swiftinterface</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			xKxkCv79mRBZuFIDa6uM5vMlE7Wn+l1RKcKYEMUeW+k=
-			</data>
-		</dict>
-		<key>Modules/BRLMPrinterKit.swiftmodule/x86_64-apple-ios-simulator.swiftdoc</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			ELgZGSqJSpBodMppLYQvEnByGJF3lpw14lx0v/jeU10=
-			</data>
-		</dict>
-		<key>Modules/BRLMPrinterKit.swiftmodule/x86_64-apple-ios-simulator.swiftinterface</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			3A54V1SUpXgviQy099+x8eOEy/zv3DdUsttTiG2AikQ=
+			6A0gq47qBar2pgpOfNlyrl4o+RlXkuCaxC5g5+RpKcc=
 			</data>
 		</dict>
 		<key>Modules/module.modulemap</key>
