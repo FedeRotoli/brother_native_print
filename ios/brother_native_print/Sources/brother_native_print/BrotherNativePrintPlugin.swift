@@ -362,14 +362,17 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     print("[BrotherNativePrint] Unicast sweep finished: \(found) printer(s) found")
   }
 
-  /// Normalizes an SNMP model string and returns nil when the device is not a
-  /// Brother printer.
+  /// Extracts the canonical Brother model token from a raw string, or returns
+  /// nil when the device is not a recognized Brother printer.
   ///
-  /// connect() only accepts "QL-820NWB"/"RJ-2050", so those exact tokens are
-  /// extracted (from "Brother QL-820NWB", "QL_820NWB", "QL-820NWB Label
-  /// Printer"...). Any other model is kept only when the device self-identifies
-  /// as Brother ("Brother ..." in the description): non-Brother printers that
-  /// answer SNMP (e.g. HP, Epson) are filtered out.
+  /// Used both for SNMP descriptions and for the model name reported by
+  /// discovery: over Bluetooth some printers expose their device name
+  /// (e.g. "QL-820NWB1234") instead of a bare model. Only the known tokens
+  /// "QL-820NWB"/"RJ-2050" are extracted (from "Brother QL-820NWB",
+  /// "QL_820NWB", "QL-820NWB Label Printer"...). Any other model is kept only
+  /// when the device self-identifies as Brother ("Brother ..." in the
+  /// description): non-Brother printers that answer SNMP (e.g. HP, Epson) are
+  /// filtered out.
   private func normalizeModel(_ raw: String?) -> String? {
     guard let trimmed = raw?
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -460,12 +463,17 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     guard let modelName = args["model"] as? String else {
       throw PluginFailure(code: "invalidArgument", message: "Missing 'model' field")
     }
+    // The model string may carry noise: some Bluetooth printers report their
+    // device name (e.g. "QL-820NWB1234") or the SNMP description
+    // ("Brother QL-820NWB Label Printer") instead of a bare model, so the
+    // canonical token is extracted instead of requiring an exact match.
     let model: BRLMPrinterModel
-    if modelName.caseInsensitiveCompare("RJ-2050") == .orderedSame {
+    switch normalizeModel(modelName) {
+    case "RJ-2050":
       model = .RJ_2050
-    } else if modelName.caseInsensitiveCompare("QL-820NWB") == .orderedSame {
+    case "QL-820NWB":
       model = .QL_820NWB
-    } else {
+    default:
       throw PluginFailure(code: "invalidArgument", message: "Unsupported model: \(modelName)")
     }
     guard let connectionType = args["connectionType"] as? String else {
@@ -887,9 +895,13 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     let info = channel.extraInfo
     let rawModelName = (info?[BRLMChannelExtraInfoKeyModelName] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines)
+    // Normalize the reported model: over Bluetooth the SDK exposes the device
+    // name (e.g. "QL-820NWB1234") rather than a bare model, so the canonical
+    // token is extracted here too (unknown models fall back to the raw name so
+    // discovery is never filtered by the supported list).
     let modelName: String
     if let raw = rawModelName, !raw.isEmpty {
-      modelName = raw
+      modelName = normalizeModel(raw) ?? raw
     } else {
       modelName = "Unknown"
     }

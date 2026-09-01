@@ -2,7 +2,7 @@ name: brother_native_print
 description: >-
   Flutter plugin to print images and PDFs to Brother label and mobile printers
   (RJ and QL series) over Wi-Fi, Bluetooth (BLE) and USB on Android.
-version: 0.4.1
+version: 0.4.2
 repository: https://github.com/FedeRotoli/brother_native_print
 issue_tracker: https://github.com/FedeRotoli/brother_native_print/issues
 documentation: https://pub.dev/documentation/brother_native_print/latest/
@@ -15,7 +15,7 @@ topics:
 
 environment:
   sdk: ^3.12.2
-  flutter: '>=3.3.0'
+  flutter: ">=3.3.0"
 
 dependencies:
   flutter:

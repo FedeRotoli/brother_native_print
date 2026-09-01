@@ -15,6 +15,7 @@ import com.brother.sdk.lmprinter.BLESearchOption
 import com.brother.sdk.lmprinter.Channel
 import com.brother.sdk.lmprinter.GetStatusError
 import com.brother.sdk.lmprinter.GetStatusResult
+import com.brother.sdk.lmprinter.Log as SdkLog
 import com.brother.sdk.lmprinter.NetworkSearchOption
 import com.brother.sdk.lmprinter.OpenChannelError
 import com.brother.sdk.lmprinter.PrintError
@@ -28,6 +29,7 @@ import com.brother.sdk.lmprinter.setting.PrintImageSettings
 import com.brother.sdk.lmprinter.setting.PrintSettings
 import com.brother.sdk.lmprinter.setting.QLPrintSettings
 import com.brother.sdk.lmprinter.setting.RJPrintSettings
+import com.brother.ptouch.sdk.Logging as SdkLogging
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -45,9 +47,13 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -98,6 +104,38 @@ class BrotherNativePrintPlugin :
         mainHandler.post { block() }
     }
 
+    /** Recent internal SDK logs captured from [SdkLogging] to surface the real
+     *  reason when openChannel fails with no error code. */
+    private val sdkLogBuffer = ConcurrentLinkedQueue<String>()
+    private val sdkLogCallbackRegistered = AtomicBoolean(false)
+
+    /**
+     * Subscribes to the SDK's internal logger so the real reason of a failed
+     * channel open is visible. The Brother SDK often reports NoError with a
+     * null driver when a connection is refused (e.g. command security), hiding
+     * the actual failure: the internal log (errorDescription + identification
+     * code) is the only place where the real cause appears.
+     */
+    private fun registerSdkLogCallback() {
+        if (!sdkLogCallbackRegistered.compareAndSet(false, true)) return
+        SdkLogging.addCallback { log ->
+            val level = log.level
+            val line = "SDK[${level?.name ?: "?"}] ${log.timeStamp}: ${log.errorDescription} " +
+                "(code=${log.errorCode}, where=${log.whereCause}, " +
+                "id=${log.identificationCode})"
+            when (level) {
+                SdkLog.Level.Error -> Log.e(TAG, line)
+                SdkLog.Level.Warning -> Log.w(TAG, line)
+                else -> Log.i(TAG, line)
+            }
+            sdkLogBuffer.offer(line)
+            while (sdkLogBuffer.size > 20) sdkLogBuffer.poll()
+        }
+    }
+
+    /** The recent SDK internal logs as a single string, empty when none. */
+    private fun recentSdkLogs(): String = sdkLogBuffer.joinToString("\n")
+
     companion object {
         private const val TAG = "BrotherNativePrint"
     }
@@ -139,6 +177,7 @@ class BrotherNativePrintPlugin :
         eventChannel.setStreamHandler(this)
         discoveryChannel = EventChannel(binding.binaryMessenger, "brother_native_print/discovery")
         discoveryChannel.setStreamHandler(discoveryStreamHandler)
+        registerSdkLogCallback()
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -402,14 +441,17 @@ class BrotherNativePrintPlugin :
     }
 
     /**
-     * Normalizes an SNMP model string and returns null when the device is not
-     * a Brother printer.
+     * Extracts the canonical Brother model token from a raw string, or returns
+     * null when the device is not a recognized Brother printer.
      *
-     * connect() only accepts "QL-820NWB"/"RJ-2050", so those exact tokens are
-     * extracted (from "Brother QL-820NWB", "QL_820NWB", "QL-820NWB Label
-     * Printer"...). Any other model is kept only when the device self-identifies
-     * as Brother ("Brother ..." in the description): non-Brother printers that
-     * answer SNMP (e.g. HP, Epson) are filtered out.
+     * Used both for SNMP descriptions and for the model name reported by
+     * discovery: over Bluetooth some printers expose their device name
+     * (e.g. "QL-820NWB1234") instead of a bare model. Only the known tokens
+     * "QL-820NWB"/"RJ-2050" are extracted (from "Brother QL-820NWB",
+     * "QL_820NWB", "QL-820NWB Label Printer"...). Any other model is kept only
+     * when the device self-identifies as Brother ("Brother ..." in the
+     * description): non-Brother printers that answer SNMP (e.g. HP, Epson) are
+     * filtered out.
      */
     private fun normalizeModel(raw: String?): String? {
         val trimmed = raw?.trim()?.removePrefix("Brother ")?.trim()
@@ -567,9 +609,13 @@ class BrotherNativePrintPlugin :
             ?: throw FlutterFailure("invalidArgument", "Missing connection arguments")
         val modelName = args["model"] as? String
             ?: throw FlutterFailure("invalidArgument", "Missing 'model' field")
-        val model = when {
-            modelName.equals("RJ-2050", ignoreCase = true) -> PrinterModel.RJ_2050
-            modelName.equals("QL-820NWB", ignoreCase = true) -> PrinterModel.QL_820NWB
+        // The model string may carry noise: some Bluetooth printers report their
+        // device name (e.g. "QL-820NWB1234") or the SNMP description
+        // ("Brother QL-820NWB Label Printer") instead of a bare model, so the
+        // canonical token is extracted instead of requiring an exact match.
+        val model = when (normalizeModel(modelName)) {
+            "RJ-2050" -> PrinterModel.RJ_2050
+            "QL-820NWB" -> PrinterModel.QL_820NWB
             else -> throw FlutterFailure("invalidArgument", "Unsupported model: $modelName")
         }
         val connectionType = args["connectionType"] as? String
@@ -667,14 +713,94 @@ class BrotherNativePrintPlugin :
         )
         val openResult = PrinterDriverGenerator.openChannel(channel)
         val openError = openResult.error
-        if (openError != null) {
+        // The Android SDK ALWAYS returns an OpenChannelError object, even on
+        // success (code == NoError): only a non-NoError code means the open
+        // failed. Checking "!= null" wrongly rejected every successful open
+        // (the root cause of "Unable to open the channel" on working printers).
+        if (openError != null && openError.code != OpenChannelError.ErrorCode.NoError) {
+            // When the printer refuses the session (e.g. command security) the
+            // SDK may return a generic code: append the SDK's own internal log,
+            // which carries the real cause.
+            val sdkLogs = recentSdkLogs()
+            val detail = if (sdkLogs.isNotBlank()) "\n\nSDK internal log:\n$sdkLogs" else ""
             throw FlutterFailure(
                 mapOpenChannelError(openError.code),
-                openError.errorRecoverySuggestion ?: "Unable to open the channel"
+                (openError.errorRecoverySuggestion
+                    ?: openChannelFailureMessage(printer, channel, openError.code)) + detail
             )
         }
         return openResult.driver
             ?: throw FlutterFailure("communicationLost", "Driver not available")
+    }
+
+    /**
+     * Probes whether this device can open a raw TCP connection to [address] on
+     * [port], returning a short readable result. Used to tell apart a printer
+     * that refuses the data session from a phone that simply cannot reach it.
+     */
+    private fun probeTcpPort(address: String, port: Int, timeoutMs: Int = 1500): String {
+        return try {
+            val socket = Socket()
+            socket.connect(InetSocketAddress(address, port), timeoutMs)
+            socket.close()
+            "CONNECTED"
+        } catch (e: Exception) {
+            "FAILED (${e.javaClass.simpleName}${e.message?.let { ": $it" } ?: ""})"
+        }
+    }
+
+    /**
+     * Readable description of why opening the channel failed, including the
+     * target address, so the log tells the user WHICH printer/IP did not
+     * answer instead of the generic "Unable to open the channel".
+     *
+     * When the SDK reports that the printer has command security (Brother
+     * "Communication Lock") enabled, a very specific hint is given: such
+     * printers refuse the raw data channel and there is no recovery without
+     * disabling the lock (or supplying the printer admin password).
+     */
+    private fun openChannelFailureMessage(
+        printer: ConnectedPrinter,
+        channel: Channel,
+        code: OpenChannelError.ErrorCode,
+    ): String {
+        val address = when (printer.connectionType) {
+            "wifi" -> printer.ip ?: "unknown IP"
+            "bluetooth" -> printer.mac ?: "unknown MAC"
+            else -> printer.serial ?: "unknown serial"
+        }
+        if (code != OpenChannelError.ErrorCode.OpenStreamFailure) {
+            return "Unable to open the channel to $address (SDK code: ${code.name})"
+        }
+        // The SDK network search reports the command-security state of the
+        // printer (it probes the IS_ENABLED_COMMAND_SECURITY OID); channels
+        // rebuilt from a bare IP (e.g. the unicast sweep) do not carry it.
+        val securityEnabled = channel.extraInfo
+            ?.get(Channel.ExtraInfoKey.isCommandSecurityEnabled)
+            ?.toBooleanStrictOrNull()
+        if (securityEnabled == true && printer.connectionType == "wifi") {
+            return "The printer at $address has command security " +
+                "(Communication Lock) enabled, so it refuses the raw data " +
+                "channel. Open http://$address/ in a browser on this network " +
+                "and disable it (Communication -> Security), then retry."
+        }
+        // OpenStreamFailure: the printer refused the data session. Probe the raw
+        // port (9100) from this device so the message tells apart a printer that
+        // rejects the session (command security / busy) from a phone that simply
+        // cannot reach it (different network, client isolation).
+        val tcpProbe = if (printer.connectionType == "wifi") {
+            " Raw TCP probe to port 9100 from this device: ${probeTcpPort(address, 9100)}."
+        } else {
+            ""
+        }
+        return "Unable to open the channel to $address (${printer.connectionType}): " +
+            "the printer did not accept the data session (SDK code: ${code.name})." +
+            tcpProbe +
+            " If CONNECTED, the printer is reachable and refuses on its side " +
+            "(command security or a stuck session): open http://$address/ and disable " +
+            "command security, then power-cycle the printer. If FAILED, this device " +
+            "cannot reach the printer's data port: check the phone is on the same " +
+            "Wi-Fi as the printer (no client isolation) and re-run discovery."
     }
 
     /**
@@ -747,6 +873,10 @@ class BrotherNativePrintPlugin :
         val copies = (options["copies"] as? Number)?.toInt()?.coerceIn(1, 99) ?: 1
         val autoCut = options["autoCut"] as? Boolean ?: true
         val paperType = options["paperType"] as? String
+        // The SDK writes a temporary "print setting" file to this path before
+        // every job; without it, printing fails with "Workpath of print setting
+        // is not set" (SDK code 57). The app cache dir is always writable.
+        val workPath = context?.cacheDir?.absolutePath.orEmpty()
         return when (model) {
             PrinterModel.RJ_2050 -> RJPrintSettings(model).apply {
                 numCopies = copies
@@ -754,6 +884,7 @@ class BrotherNativePrintPlugin :
                 // Over Bluetooth the pre-print status request can fail
                 // ("Failed to get status") on some RJ models: skip it.
                 isSkipStatusCheck = true
+                this.workPath = workPath
                 applyCustomPaper(this, options)
             }
             PrinterModel.QL_820NWB -> QLPrintSettings(model).apply {
@@ -761,6 +892,7 @@ class BrotherNativePrintPlugin :
                 isAutoCut = autoCut
                 scaleMode = PrintImageSettings.ScaleMode.FitPageAspect
                 isSkipStatusCheck = true
+                this.workPath = workPath
                 paperType?.let {
                     runCatching { labelSize = QLPrintSettings.LabelSize.valueOf(it) }
                 }
@@ -880,6 +1012,7 @@ class BrotherNativePrintPlugin :
     private fun mapOpenChannelError(code: OpenChannelError.ErrorCode): String = when (code) {
         OpenChannelError.ErrorCode.Timeout -> "timeout"
         OpenChannelError.ErrorCode.InsufficientPermissions -> "permissionMissing"
+        OpenChannelError.ErrorCode.OpenStreamFailure -> "printerUnreachable"
         else -> "communicationLost"
     }
 
@@ -921,8 +1054,13 @@ class BrotherNativePrintPlugin :
 
     private fun channelToMap(channel: Channel): Map<String, Any?> {
         val info = channel.extraInfo
-        val modelName = (info?.get(Channel.ExtraInfoKey.ModelName) as? String)
-            ?.takeIf { it.isNotBlank() } ?: "Unknown"
+        // Normalize the reported model: over Bluetooth the SDK exposes the
+        // device name (e.g. "QL-820NWB1234") rather than a bare model, so the
+        // canonical token is extracted here too (unknown models fall back to
+        // the raw name so discovery is never filtered by the supported list).
+        val rawModel = (info?.get(Channel.ExtraInfoKey.ModelName) as? String)
+            ?.takeIf { it.isNotBlank() }
+        val modelName = normalizeModel(rawModel) ?: rawModel ?: "Unknown"
         val connectionType = when (channel.channelType) {
             Channel.ChannelType.Wifi -> "wifi"
             Channel.ChannelType.Bluetooth,

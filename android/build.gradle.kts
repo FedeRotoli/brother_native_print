@@ -80,6 +80,10 @@ dependencies {
     // minSdkVersion richiesto dall'AAR: 21 (il plugin usa 24, quindi compatibile).
     implementation("com.brother.sdk:BrotherPrintLibrary:1.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // Needed for com.brother.ptouch.sdk.Logging#addCallback (androidx.core.util.Consumer),
+    // used to surface the real reason of a failed channel open: the SDK often
+    // reports NoError with a null driver, hiding the actual failure.
+    implementation("androidx.core:core:1.13.1")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")

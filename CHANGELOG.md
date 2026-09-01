@@ -1,3 +1,12 @@
+## 0.4.2
+
+- **Fix (Android & iOS)**: the printer model is now extracted (normalized)
+  instead of exact-matched when connecting. Some Brother printers report their
+  Bluetooth device name — model plus a 4-digit identifier, e.g.
+  `QL-820NWB1234` — as the model, which previously failed with an
+  "Unsupported model" exception on connect. Discovery now also reports the
+  canonical model (e.g. `QL-820NWB`) for such devices.
+
 ## 0.4.1
 
 - **Fix (Android)**: discovery and status events are now emitted on the main
