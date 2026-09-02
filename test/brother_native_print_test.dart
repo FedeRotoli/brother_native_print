@@ -36,7 +36,10 @@ class MockBrotherNativePrintPlatform
   );
 
   @override
-  Future<bool> connect(BrotherPrinter printer) => Future.value(true);
+  Future<bool> connect(
+    BrotherPrinter printer, {
+    bool resolveSerialNumber = true,
+  }) => Future.value(true);
 
   @override
   Future<void> disconnect() => Future.value();

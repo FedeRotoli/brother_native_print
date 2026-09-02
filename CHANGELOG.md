@@ -1,3 +1,16 @@
+## 0.6.1
+
+- **Enhancement (Android & iOS)**: Wi-Fi discovery now reports the printer
+  serial number. The unicast subnet sweep queries the Brother private MIB
+  serial OID (`1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0`, the same one the SDK
+  network search reads) and populates the channel serial, so
+  `BrotherPrinter.serialNumber` is filled for printers found over Wi-Fi (both
+  via the SDK search and the sweep). Bluetooth/BLE still do not expose it.
+- **Enhancement (API)**: `BrotherNativePrint.connect()` accepts a
+  `resolveSerialNumber` flag (default `true`). Set it to `false` to skip the
+  serial-number round-trip over the just-opened connection and speed up the
+  connection when the serial is not needed.
+
 ## 0.6.0
 
 - **Fix (Android & iOS)**: discovery no longer reports non-Brother devices as

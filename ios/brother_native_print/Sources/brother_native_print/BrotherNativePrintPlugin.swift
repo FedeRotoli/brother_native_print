@@ -302,7 +302,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   }
 
   /// Fallback Wi-Fi discovery: probes every host on the phone's subnet with a
-  /// unicast SNMP GET asking for the Brother model OID.
+  /// unicast SNMP GET asking for the Brother model/serial OIDs.
   ///
   /// The SDK network search relies on a broadcast that some routers filter and
   /// that some printer firmware ignores (responding only to unicast SNMP), so
@@ -338,7 +338,7 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         guard generation == self.discoveryGeneration else { return }
         // The SDK reads the model from hrDeviceDescr (Host Resources), so
         // probe it first; hosts that respond without a model value fall back
-        // to sysDescr and the Brother private MIB.
+        // to sysDescr.
         let first = SnmpClient.probe(host: host, oid: SnmpClient.hrDeviceDescrOID, timeoutMs: 500)
         guard generation == self.discoveryGeneration else { return }
         guard first.responded else { return }
@@ -346,10 +346,6 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         if clean == nil {
           let desc = SnmpClient.probe(host: host, oid: SnmpClient.sysDescrOID, timeoutMs: 300)
           clean = self.normalizeModel(desc.value)
-        }
-        if clean == nil {
-          let privateModel = SnmpClient.probe(host: host, oid: SnmpClient.modelOID, timeoutMs: 300)
-          clean = self.normalizeModel(privateModel.value)
         }
         guard let model = clean else { return }
         let channel = BRLMChannel(wifiIPAddress: host)
@@ -360,6 +356,15 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         if let macBytes = SnmpClient.probeRaw(host: host, oid: SnmpClient.ifPhysAddressOID, timeoutMs: 400),
            let mac = SnmpClient.formatMac(macBytes) {
           channel.extraInfo?[BRLMChannelExtraInfoKeyMacAddress] = mac as NSString
+        }
+        // Brother private MIB serial number: the same OID the SDK network
+        // search reads into the serial extraInfo, so Wi-Fi discovery reports
+        // the serial number too.
+        let serial = SnmpClient.probe(host: host, oid: SnmpClient.serialNumberOID, timeoutMs: 300)
+        if serial.responded,
+           let serialValue = serial.value,
+           !serialValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          channel.extraInfo?[BRLMChannelExtraInfoKeySerialNumber] = serialValue as NSString
         }
         self.emitChannel(channel, generation: generation)
         foundLock.lock()
@@ -516,6 +521,9 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     let ip = args["ipAddress"] as? String
     let mac = args["macAddress"] as? String
     let serial = args["serialNumber"] as? String
+    // When false, skip the serial query over the just-opened channel to keep
+    // connect() fast when the serial number is not needed.
+    let resolveSerialNumber = args["resolveSerialNumber"] as? Bool ?? true
 
     let channel = try resolveChannel(type: connectionType, ip: ip, mac: mac, serial: serial)
 
@@ -530,12 +538,12 @@ public class BrotherNativePrintPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         message: probe.error.errorRecoverySuggestion ?? "Unable to open the channel"
       )
     }
-    // Discovery only fills the serial in the channel's extraInfo for USB (and
-    // sometimes MFi Bluetooth): over Wi-Fi and BLE it is empty, so query the
+    // Discovery reports the serial for Wi-Fi (via SNMP) and USB, but not for
+    // Bluetooth/BLE; connect-by-IP also has no discovery serial. Query the
     // real serial over the just-opened connection and persist it (falls back
     // to the passed serial when unsupported/unavailable).
     var resolvedSerial = serial
-    if let driver = probe.driver {
+    if resolveSerialNumber, let driver = probe.driver {
       let result = driver.requestSerialNumber()
       if result.error.code == .noError,
          let value = result.printerInfo as? String,
@@ -1046,8 +1054,8 @@ private class DiscoveryStreamHandler: NSObject, FlutterStreamHandler {
 /// (BER/TLV) and the response is walked to extract the last OCTET STRING.
 /// Failures (timeout, non-SNMP host, malformed packet) return nil.
 private struct SnmpClient {
-  /// Brother private MIB (enterprise 2435): printer model name.
-  static let modelOID = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"
+  /// Brother private MIB (enterprise 2435): printer serial number.
+  static let serialNumberOID = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"
   /// Standard MIB-II sysDescr, often "Brother QL-820NWB...".
   static let sysDescrOID = "1.3.6.1.2.1.1.1.0"
   /// Host Resources hrDeviceDescr, also reports the device description.

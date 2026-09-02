@@ -45,11 +45,14 @@ class MethodChannelBrotherNativePrint extends BrotherNativePrintPlatform {
   }
 
   @override
-  Future<bool> connect(BrotherPrinter printer) async {
-    final result = await methodChannel.invokeMethod<bool>(
-      'connect',
-      printer.toMap(),
-    );
+  Future<bool> connect(
+    BrotherPrinter printer, {
+    bool resolveSerialNumber = true,
+  }) async {
+    final result = await methodChannel.invokeMethod<bool>('connect', {
+      ...printer.toMap(),
+      'resolveSerialNumber': resolveSerialNumber,
+    });
     return result ?? false;
   }
 

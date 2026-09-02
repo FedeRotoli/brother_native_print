@@ -70,9 +70,20 @@ class BrotherNativePrint {
   /// Only the RJ-2050 and QL-820NWB models are currently supported; passing a
   /// different model throws an `invalidArgument` [PlatformException].
   ///
+  /// When [resolveSerialNumber] is `true` (default), the plugin queries the
+  /// serial number over the just-opened connection so [getConnectedPrinter]
+  /// can return it even when discovery couldn't report it (Bluetooth/BLE and
+  /// connect-by-IP). Set it to `false` to skip that round-trip and speed up
+  /// the connection when the serial number is not needed.
+  ///
   /// Returns `true` on success.
-  Future<bool> connect(BrotherPrinter printer) =>
-      BrotherNativePrintPlatform.instance.connect(printer);
+  Future<bool> connect(
+    BrotherPrinter printer, {
+    bool resolveSerialNumber = true,
+  }) => BrotherNativePrintPlatform.instance.connect(
+    printer,
+    resolveSerialNumber: resolveSerialNumber,
+  );
 
   /// Closes the connection with the currently connected printer, if any.
   Future<void> disconnect() => BrotherNativePrintPlatform.instance.disconnect();

@@ -369,7 +369,7 @@ class BrotherNativePrintPlugin :
 
     /**
      * Fallback Wi-Fi discovery: probes every host on the phone's subnet with a
-     * unicast SNMP GET asking for the Brother model OID.
+     * unicast SNMP GET asking for the Brother model/serial OIDs.
      *
      * The SDK network search relies on a broadcast that some routers filter and
      * that some printer firmware ignores (responding only to unicast SNMP), so
@@ -406,8 +406,7 @@ class BrotherNativePrintPlugin :
                         if (generation != discoveryGeneration) return@execute
                         // The SDK reads the model from hrDeviceDescr (Host
                         // Resources), so probe it first; hosts that respond
-                        // without a model value fall back to sysDescr and the
-                        // Brother private MIB.
+                        // without a model value fall back to sysDescr.
                         val first = SnmpProbe.probe(host, SnmpProbe.HR_DEVICE_DESCR_OID, 500)
                         if (generation != discoveryGeneration) return@execute
                         if (!first.responded) return@execute
@@ -416,21 +415,26 @@ class BrotherNativePrintPlugin :
                             val desc = SnmpProbe.probe(host, SnmpProbe.SYSDESCR_OID, 300)
                             clean = normalizeModel(desc.value)
                         }
-                        if (clean == null) {
-                            val privateModel = SnmpProbe.probe(host, SnmpProbe.MODEL_OID, 300)
-                            clean = normalizeModel(privateModel.value)
-                        }
                         if (clean == null) return@execute
                         // IF-MIB ifPhysAddress returns the NIC MAC as raw
                         // bytes (same OID the SDK network search uses).
                         val mac = runCatching {
                             SnmpProbe.probeRaw(host, SnmpProbe.IF_PHYS_ADDRESS_OID, 400)
                         }.getOrNull()?.let { SnmpProbe.formatMac(it) }
+                        // Brother private MIB serial number: the same OID the
+                        // SDK network search reads into SerialNubmer, so Wi-Fi
+                        // discovery reports the serial number too.
+                        val serial = SnmpProbe.probe(host, SnmpProbe.SERIAL_NO_OID, 300)
+                            .takeIf { it.responded && !it.value.isNullOrBlank() }
+                            ?.value
                         val channel = Channel.newWifiChannel(host).apply {
                             extraInfo[Channel.ExtraInfoKey.ModelName] = clean
                             extraInfo[Channel.ExtraInfoKey.IpAddress] = host
                             if (mac != null) {
                                 extraInfo[Channel.ExtraInfoKey.MACAddress] = mac
+                            }
+                            if (serial != null) {
+                                extraInfo[Channel.ExtraInfoKey.SerialNubmer] = serial
                             }
                         }
                         emitChannel(channel, generation)
@@ -643,20 +647,27 @@ class BrotherNativePrintPlugin :
         val ip = args["ipAddress"] as? String
         val mac = args["macAddress"] as? String
         val serial = args["serialNumber"] as? String
+        // When false, skip the serial query over the just-opened channel to
+        // keep connect() fast when the serial number is not needed.
+        val resolveSerialNumber = args["resolveSerialNumber"] as? Boolean ?: true
 
         val printer = ConnectedPrinter(model, modelName, connectionType, ip, mac, serial)
         // Reachability probe: open and immediately close a channel.
         val probe = openDriver(printer)
-        // The SDK only fills the serial in the channel's extraInfo for USB:
-        // over Bluetooth and Wi-Fi discovery reports an empty serial, so query
+        // Discovery reports the serial for Wi-Fi (via SNMP) and USB, but not
+        // for Bluetooth/BLE; connect-by-IP also has no discovery serial. Query
         // the real one over the just-opened connection and persist it (the
         // query falls back to the passed serial when unsupported/unavailable).
-        val serialInfo = runCatching { probe.requestSerialNumber() }.getOrNull()
-        val realSerial = serialInfo
-            ?.takeIf { it.error.code == RequestPrinterInfoErrorCode.NoError }
-            ?.printerInfo
-            ?.takeIf { it.isNotBlank() }
-            ?: printer.serial
+        val realSerial = if (resolveSerialNumber) {
+            val serialInfo = runCatching { probe.requestSerialNumber() }.getOrNull()
+            serialInfo
+                ?.takeIf { it.error.code == RequestPrinterInfoErrorCode.NoError }
+                ?.printerInfo
+                ?.takeIf { it.isNotBlank() }
+                ?: printer.serial
+        } else {
+            printer.serial
+        }
         runCatching { probe.closeChannel() }
 
         synchronized(this) {
@@ -1206,8 +1217,8 @@ internal fun looksLikeBrotherDevice(name: String?): Boolean {
 }
 
 private object SnmpProbe {
-    /** Brother private MIB (enterprise 2435): printer model name. */
-    const val MODEL_OID = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"
+    /** Brother private MIB (enterprise 2435): printer serial number. */
+    const val SERIAL_NO_OID = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"
     /** Standard MIB-II sysDescr, often "Brother QL-820NWB...". */
     const val SYSDESCR_OID = "1.3.6.1.2.1.1.1.0"
     /** Host Resources hrDeviceDescr, also reports the device description. */

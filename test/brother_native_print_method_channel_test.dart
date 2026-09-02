@@ -143,6 +143,30 @@ void main() {
     },
   );
 
+  test('connect forwards resolveSerialNumber to the native side', () async {
+    Object? connectArguments;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+          if (methodCall.method == 'connect') {
+            connectArguments = methodCall.arguments;
+          }
+          return true;
+        });
+
+    const printer = BrotherPrinter(
+      model: 'QL-820NWB',
+      connectionType: BrotherConnectionType.bluetooth,
+      macAddress: '11:22:33:44:55:66',
+      serialNumber: 'SN456',
+    );
+
+    await platform.connect(printer);
+    expect((connectArguments as Map)['resolveSerialNumber'], isTrue);
+
+    await platform.connect(printer, resolveSerialNumber: false);
+    expect((connectArguments as Map)['resolveSerialNumber'], isFalse);
+  });
+
   test('cancelPrinting invokes the method channel', () async {
     String? invoked;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

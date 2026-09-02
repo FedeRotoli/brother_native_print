@@ -32,8 +32,10 @@ abstract class BrotherNativePrintPlatform extends PlatformInterface {
     Duration timeout = const Duration(seconds: 10),
   }) => throw UnimplementedError('discoverPrintersStream() not implemented.');
 
-  Future<bool> connect(BrotherPrinter printer) =>
-      throw UnimplementedError('connect() not implemented.');
+  Future<bool> connect(
+    BrotherPrinter printer, {
+    bool resolveSerialNumber = true,
+  }) => throw UnimplementedError('connect() not implemented.');
 
   Future<void> disconnect() =>
       throw UnimplementedError('disconnect() not implemented.');
