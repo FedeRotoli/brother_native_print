@@ -1,3 +1,14 @@
+## Unreleased
+
+- **Docs (README)**: added a *Publishing to the Apple Store* section to the
+  README documenting that apps submitting to the App Store and connecting to
+  Brother printers over Bluetooth/BLE must first obtain a **PPID (Program
+  Product Identifier) from Brother** — a mandatory step for Apple's **MFi**
+  program. The section links to Brother's MFi request page
+  (<https://secure6.brother.co.jp/mfi/Top.aspx>) and quotes the rejection
+  message ("App has not been authorized by the accessory manufacturer to work
+  with the MFi accessory") the developer will otherwise receive.
+
 ## 0.6.1
 
 - **Enhancement (Android & iOS)**: Wi-Fi discovery now reports the printer

@@ -123,6 +123,24 @@ On Android 12+ you must also request the runtime permissions
    </array>
    ```
 
+## Publishing to the Apple Store
+
+If your app connects to Brother printers over Bluetooth/BLE on iOS, Apple's
+**MFi (Made for iPhone)** program requires the app to be authorized by the
+accessory manufacturer. Before submitting to the App Store you **must** obtain
+a **PPID (Program Product Identifier) from Brother** — this is a mandatory
+step for MFi submission.
+
+Request the PPID here:
+[https://secure6.brother.co.jp/mfi/Top.aspx](https://secure6.brother.co.jp/mfi/Top.aspx)
+
+Without it your submission will likely receive a rejection message along the
+lines of:
+
+```
+App has not been authorized by the accessory manufacturer to work with the MFi accessory
+```
+
 ## Quick start
 
 ```dart
