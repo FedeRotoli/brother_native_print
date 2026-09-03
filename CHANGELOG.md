@@ -1,4 +1,4 @@
-## Unreleased
+## 0.6.2
 
 - **Docs (README)**: added a *Publishing to the Apple Store* section to the
   README documenting that apps submitting to the App Store and connecting to
