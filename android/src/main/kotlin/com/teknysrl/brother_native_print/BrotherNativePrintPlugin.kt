@@ -3,6 +3,7 @@ package com.teknysrl.brother_native_print
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
@@ -116,8 +117,18 @@ class BrotherNativePrintPlugin :
      * null driver when a connection is refused (e.g. command security), hiding
      * the actual failure: the internal log (errorDescription + identification
      * code) is the only place where the real cause appears.
+     *
+     * Debug/profile builds only. The SDK dispatches every log line to the
+     * callback through JNI (`bpes::Logging::sendLogProcessedErrorcode` ->
+     * `CallVoidMethod`) and its Java bridge
+     * (`com.brother.ptouch.sdk.Logging$2`) catches only `JSONException`: any
+     * other exception thrown there is left pending in native code, and ART
+     * aborts the process (SIGABRT) on the next JNI call. The captured log only
+     * enriches a diagnostic message, so the callback is not registered in
+     * release builds.
      */
     private fun registerSdkLogCallback() {
+        if (!isDebuggableBuild()) return
         if (!sdkLogCallbackRegistered.compareAndSet(false, true)) return
         SdkLogging.addCallback { log ->
             val level = log.level
@@ -132,6 +143,13 @@ class BrotherNativePrintPlugin :
             sdkLogBuffer.offer(line)
             while (sdkLogBuffer.size > 20) sdkLogBuffer.poll()
         }
+    }
+
+    /** `true` for debug and profile builds (both are debuggable), `false` for
+     *  release. */
+    private fun isDebuggableBuild(): Boolean {
+        val flags = context?.applicationInfo?.flags ?: 0
+        return (flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     }
 
     /** The recent SDK internal logs as a single string, empty when none. */

@@ -1,3 +1,18 @@
+## 0.6.3
+
+- **Fix (Android)**: the SDK internal-log callback is no longer registered in
+  release builds (debug/profile only). The Brother SDK dispatches every log
+  line to the registered Java callback through JNI
+  (`bpes::Logging::sendLogProcessedErrorcode` -> `CallVoidMethod`), and its
+  Java bridge (`com.brother.ptouch.sdk.Logging$2`) catches only
+  `JSONException`: any other exception thrown there (e.g. the
+  `NullPointerException` raised by `com.brother.sdk.lmprinter.Log` when the
+  native level id is not one of Notice/Warning/Error) stays pending in native
+  code, and ART aborts the process with `SIGABRT` (`abort` /
+  `art::Runtime::Abort`) on the next JNI call. Since the collected log is only
+  used to enrich the `openChannel` failure message, the callback is now armed
+  only when the app is debuggable, so release builds never enter that path.
+
 ## 0.6.2
 
 - **Docs (README)**: added a *Publishing to the Apple Store* section to the
