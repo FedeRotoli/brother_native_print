@@ -59,7 +59,9 @@ custom_paper/             Custom paper .bin definitions for supported printers
 
 ## Publishing
 
-Maintainers: bump the version in `pubspec.yaml`, update `CHANGELOG.md`, then:
+Maintainers: bump the version in `pubspec.yaml`, update `CHANGELOG.md`, run
+`tool/prepare_ios_frameworks.sh` (it LF-normalizes the bundled `.swiftinterface`
+files and strips the xcframework code signatures), then:
 
 ```sh
 flutter pub publish --dry-run

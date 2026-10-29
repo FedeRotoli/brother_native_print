@@ -1,3 +1,23 @@
+## 0.6.4
+
+- **Fix (iOS)**: the bundled `BRLMPrinterKit.xcframework` no longer carries any
+  code signature — neither the container-level `_CodeSignature` nor the
+  per-slice ad-hoc signatures — and the Mach-O binaries are back to the vendor's
+  unsigned build (byte-identical to the binary distributed in `0.6.3`). The
+  ad-hoc seal covered `Headers/` and `Modules/`, which Xcode removes while
+  embedding the framework, so the embedded copy kept a signature that no longer
+  validated (`a sealed resource is missing or invalid`); on Xcode 26/27
+  `ProcessXCFramework` can reject such an artifact with
+  `The signature of "BRLMPrinterKit.xcframework" cannot be verified`. Xcode now
+  signs the framework with the app identity when embedding it, as Apple
+  recommends for binary frameworks.
+- **Chore (iOS)**: added `tool/prepare_ios_frameworks.sh`, to be run before
+  every `dart pub publish`. It LF-normalizes all `.swiftinterface` files
+  (including `.private.swiftinterface`) and strips the signatures above. The
+  published `0.6.3` archive already shipped LF interfaces and no signatures, but
+  nothing in the repository enforced that state, so a publish from a dirty tree
+  could ship the ad-hoc signed framework again.
+
 ## 0.6.3
 
 - **Fix (Android)**: the SDK internal-log callback is no longer registered in
